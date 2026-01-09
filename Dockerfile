@@ -71,19 +71,16 @@ RUN mkdir -p ${OTHER_WS}
 RUN mkdir -p ${ROS2_WS}/src
 RUN mkdir -p ${ROS2_WS}/bags
 
-# Enable SSH for git cloning
-RUN --mount=type=ssh id=default mkdir -p ~/.ssh/ && ssh-keyscan -H github.com >> ~/.ssh/known_hosts
-
 # Clone/copy general repository dependencies
 WORKDIR ${OTHER_WS}
-RUN --mount=type=ssh git clone git@github.com:mkrizmancic/my_graphs_dataset.git
+RUN git clone https://github.com/mkrizmancic/my_graphs_dataset.git
 
 # Build and install general packages
 RUN cd ${OTHER_WS}/my_graphs_dataset && pip install -e .
 
 # Clone the example ROS2 package
 WORKDIR ${ROS2_WS}/src
-RUN --mount=type=ssh git clone git@github.com:mkrizmancic/ros2_dec_gnn.git
+RUN git clone https://github.com/mkrizmancic/ros2_dec_gnn.git
 RUN cd ros2_dec_gnn && git checkout app_mids
 
 # Build ROS2 workspace
