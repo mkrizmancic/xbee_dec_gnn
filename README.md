@@ -2,6 +2,18 @@
 
 ## Installation and setup
 
+1. Prepare SSH keys for remote Raspberry Pi access:
+   1. On your host machine (not inside the Docker container), generate SSH keys if you don't have them already:
+      ```bash
+      ssh-keygen -t ed25519 -f ~/.ssh/rpi_student_key -C <your_name>"
+      ```
+   1. Copy the public key to each Raspberry Pi you want to connect to. This unfortunately requires a bit of manual work:
+      ```bash
+      ssh-copy-id -i ~/.ssh/rpi_student_key.pub pi@rpi0.local
+      ssh-copy-id -i ~/.ssh/rpi_student_key.pub pi@rpi1.local
+      ssh-copy-id -i ~/.ssh/rpi_student_key.pub pi@...
+      ```
+
 1. Install Docker by following the instructions below.
 
    1. You must have Ubuntu OS installed on your computer. If you have an NVIDIA GPU, please follow [these instructions](https://github.com/larics/docker_files/wiki/2.-Installation#gpu-support) to prepare for Docker installation.
@@ -41,17 +53,6 @@
     ```
    You will see your prompt change from `<your username>@<your hostname>` to `root@<your hostname>`. This indicates that you are now inside the Docker container.
 
-1. Prepare SSH keys for remote Raspberry Pi access:
-   1. On your host machine (not inside the Docker container), generate SSH keys if you don't have them already:
-      ```bash
-      ssh-keygen -t ed25519 -f ~/.ssh/rpi_student_key -C <your_name>"
-      ```
-   1. Copy the public key to each Raspberry Pi you want to connect to. This unfortunately requires a bit of manual work:
-      ```bash
-      ssh-copy-id -i ~/.ssh/rpi_student_key.pub pi@rpi0.local
-      ssh-copy-id -i ~/.ssh/rpi_student_key.pub pi@rpi1.local
-      ssh-copy-id -i ~/.ssh/rpi_student_key.pub pi@...
-      ```
 
 ## Running a demo
 This code comes with a demo of decentralized GNN execution:
@@ -77,7 +78,9 @@ To run the demo, follow these steps:
 
 1. You will see 5 tmux panes, each representing a node in the graph. Each pane will display logs of the node's operations, including the final output indicating whether the node is part of the MIDS set (1) or not (0). A graphical window displaying the graph and the MIDS solution(s) will also appear. You can change the current graph by clicking the "Next" button in the graphical window.
 
-1. Stop the demo by closing the graphical window and pressing `Ctrl+A` followed by `K` in the terminal to kill the tmux session.
+1. Stop the demo by doing the following:
+   1. Stop GNN nodes with `Ctrl+C` (you can skip this in local mode, in remote it shuts down LEDs on Raspberry Pis)
+   1. Kill the tmux session with `Ctrl+A` followed by `K` in the terminal.
 
 ## Developing the Xbee package
 1. Use the ROS 2 demo as the inspiration for Xbee variant. The code should be almost identical, except for the communication part which should use Xbee instead of ROS 2.
@@ -98,7 +101,7 @@ To run the demo, follow these steps:
       ```
    1. You are now connected to each Raspberry's terminal. Start the docker container on each Raspberry Pi:
       ```bash
-      docker start -it xbee_gnn_cont
+      docker start -i xbee_gnn_cont
       ```
    1. Navigate to the `xbee_dec_gnn` package and pull the latest changes:
       ```bash
@@ -113,9 +116,9 @@ To run the demo, follow these steps:
    ```
    This command automatically SSHs into all Raspberry Pis in parallel, starts the Docker container, and runs the Xbee GNN code on each device.
 
-1. To upload new or modified datasets and models to the Raspberry Pis, use the provided tmuxinator config:
+1. To upload new or modified datasets and models to the Raspberry Pis, use the provided bash script:
    ```bash
-   tmuxinator start -p tmux_upload_to_rpi.yml
+   ./docker/volumes/copy_to_rpi.sh
    ```
 
 ## Bonus section

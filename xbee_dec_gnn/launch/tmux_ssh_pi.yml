@@ -50,8 +50,8 @@ windows:
       layout: even-horizontal
       synchronize: after
       panes:
-        - ssh -o StrictHostKeyChecking=no -o ForwardAgent=yes pi@rpi0.local
-        - ssh -o StrictHostKeyChecking=no -o ForwardAgent=yes pi@rpi1.local
-        - ssh -o StrictHostKeyChecking=no -o ForwardAgent=yes pi@rpi2.local
-        - ssh -o StrictHostKeyChecking=no -o ForwardAgent=yes pi@rpi3.local
-        - ssh -o StrictHostKeyChecking=no -o ForwardAgent=yes pi@rpi4.local
+        - ssh -o StrictHostKeyChecking=no pi@rpi0.local
+        - ssh -o StrictHostKeyChecking=no pi@rpi1.local
+        - ssh -o StrictHostKeyChecking=no pi@rpi2.local
+        - ssh -o StrictHostKeyChecking=no pi@rpi3.local
+        - ssh -o StrictHostKeyChecking=no pi@rpi4.local

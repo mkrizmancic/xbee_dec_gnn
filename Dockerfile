@@ -71,16 +71,19 @@ RUN mkdir -p ${OTHER_WS}
 RUN mkdir -p ${ROS2_WS}/src
 RUN mkdir -p ${ROS2_WS}/bags
 
+# Enable SSH for git cloning
+RUN --mount=type=ssh id=default mkdir -p ~/.ssh/ && ssh-keyscan -H github.com >> ~/.ssh/known_hosts
+
 # Clone/copy general repository dependencies
 WORKDIR ${OTHER_WS}
-RUN git clone https://github.com/mkrizmancic/my_graphs_dataset.git
+RUN --mount=type=ssh git clone git@github.com:mkrizmancic/my_graphs_dataset.git
 
 # Build and install general packages
 RUN cd ${OTHER_WS}/my_graphs_dataset && pip install -e .
 
-# Copy the example ROS2 package
+# Clone the example ROS2 package
 WORKDIR ${ROS2_WS}/src
-RUN git clone https://github.com/mkrizmancic/ros2_dec_gnn.git
+RUN --mount=type=ssh git clone git@github.com:mkrizmancic/ros2_dec_gnn.git
 RUN cd ros2_dec_gnn && git checkout app_mids
 
 # Build ROS2 workspace
@@ -92,6 +95,8 @@ RUN echo "source /opt/ros/$ROS_DISTRO/setup.bash" >> $HOME/.bashrc
 RUN echo "source $HOME/ros2_ws/install/setup.bash" >> $HOME/.bashrc
 RUN echo "export ROS_DOMAIN_ID=${ROS_DOMAIN_ID}" >> $HOME/.bashrc
 
+# Copy the current project files into the container
+COPY xbee_dec_gnn ${OTHER_WS}/xbee_dec_gnn
 
 # ------------------------------------------------------------
 # STAGE 3: FINAL (Mix in optional additions)
