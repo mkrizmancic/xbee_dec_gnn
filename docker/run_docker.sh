@@ -9,6 +9,7 @@ docker run \
   -it \
   --network host \
   --ipc host \
+  --privileged \
   --volume /var/run/dbus:/var/run/dbus \
   --volume /var/run/avahi-daemon/socket:/var/run/avahi-daemon/socket \
   --volume $SCRIPT_DIR/volumes/datasets:/root/resources/data \
