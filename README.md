@@ -102,6 +102,7 @@ To run the demo, follow these steps:
    1. Make necessary changes.
    1. When you want to save your changes, simply commit and push them to GitHub from the Docker terminal or the VS Code. The Docker is set up so that it uses your SSH agent from the host.
    1. To run the code, navigate to the appropriate directory and run it in the terminal inside the Docker container.
+   1. You will need to create or modify the tmuxinator configuration files in the `launch` directory to run your code in multiple panes.
 
 1. Datasets and models are **mounted** into the container from the directories inside `docker/volumes` on your host machine to the `/root/resources/data` and `/root/resources/models` directories inside the container. This means that any changes made on the host are immediately visible inside the container and vice versa. Your code should use these locations to load data and models. To change or add new datasets or models, simply add them to the respective directories on your host machine.
 
@@ -142,6 +143,14 @@ To run the demo, follow these steps:
 1. Develop your own datasets and models, and add them to the `docker/volumes` directory on your host machine.
 1. Create a new branch in `ros2_dec_gnn` for your application and modify `node.py` code as necessary. Test the decentralized GNN on your dataset and model using ROS 2 inside the Docker container on your host machine.
 1. Test the decentralized GNN on your dataset and model using Xbee on Raspberry Pis. Follow the previous instructions to copy the dataset and models.
+
+## Phases/tasks
+- [ ] Try running the provided ROS 2 MIDS demo locally inside the Docker container on your host machine.
+- [ ] Try running the provided ROS 2 MIDS demo remotely on Raspberry Pis.
+- [ ] Modify the ROS 2 MIDS demo code to use Xbee communication instead of ROS 2.
+- [ ] Create your own datasets and models for the decentralized GNN.
+- [ ] Test your application using ROS 2 locally and on Raspberry Pis.
+- [ ] Test your application using Xbee on Raspberry Pis.
 
 ## Bonus section
 The provided Docker image comes with a few preinstalled tools and configs which may simplify your life.
