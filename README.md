@@ -5,13 +5,18 @@
 1. Prepare SSH keys for remote Raspberry Pi access:
    1. On your host machine (not inside the Docker container), generate SSH keys if you don't have them already:
       ```bash
-      ssh-keygen -t ed25519 -f ~/.ssh/rpi_student_key -C <your_name>"
+      ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -C <your_name_or_email>"
+      ```
+   1. Add the SSH key to the SSH agent:
+      ```bash
+      eval "$(ssh-agent -s)"
+      ssh-add ~/.ssh/id_ed25519
       ```
    1. Copy the public key to each Raspberry Pi you want to connect to. This unfortunately requires a bit of manual work:
       ```bash
-      ssh-copy-id -i ~/.ssh/rpi_student_key.pub pi@rpi0.local
-      ssh-copy-id -i ~/.ssh/rpi_student_key.pub pi@rpi1.local
-      ssh-copy-id -i ~/.ssh/rpi_student_key.pub pi@...
+      ssh-copy-id -i ~/.ssh/id_ed25519.pub pi@rpi0.local
+      ssh-copy-id -i ~/.ssh/id_ed25519.pub pi@rpi1.local
+      ssh-copy-id -i ~/.ssh/id_ed25519.pub pi@...
       ```
 
 1. Install Docker by following the instructions below.
@@ -53,6 +58,13 @@
     ```
    You will see your prompt change from `<your username>@<your hostname>` to `root@<your hostname>`. This indicates that you are now inside the Docker container.
 
+1. Later, you can start the container again with:
+
+   ```bash
+   docker start -i xbee_gnn_cont
+   ```
+
+1. You can exit the container at any time by typing `exit` or pressing `Ctrl+D`.
 
 ## Running a demo
 This code comes with a demo of decentralized GNN execution:
@@ -79,27 +91,27 @@ To run the demo, follow these steps:
 1. You will see 5 tmux panes, each representing a node in the graph. Each pane will display logs of the node's operations, including the final output indicating whether the node is part of the MIDS set (1) or not (0). A graphical window displaying the graph and the MIDS solution(s) will also appear. You can change the current graph by clicking the "Next" button in the graphical window.
 
 1. Stop the demo by doing the following:
-   1. Stop GNN nodes with `Ctrl+C` (you can skip this in local mode, in remote it shuts down LEDs on Raspberry Pis)
+   1. Stop GNN nodes with `Ctrl+C`. (You can skip this in local mode, but in remote mode, it shuts down LEDs on Raspberry Pis.)
    1. Kill the tmux session with `Ctrl+A` followed by `K` in the terminal.
 
 ## Developing the Xbee package
 1. Use the ROS 2 demo as the inspiration for Xbee variant. The code should be almost identical, except for the communication part which should use Xbee instead of ROS 2.
 
-1. During Docker container creation, the `xbee_dec_gnn` package is **mounted** into the container. This means that any change you make in this directory on your machine is automatically available inside the container. The package is mounted to the `~/other_ws/xbee_dec_gnn` directory.
-   1. Open the code in your favorite IDE on your **host machine**.
+1. During Docker container creation, the `xbee_dec_gnn` package is **copied** into the container. This means that any change you make in this directory on your machine is going to be different than what is inside the container. The package is copied to the `~/other_ws/xbee_dec_gnn` directory.
+   1. Attach the VS Code to the Docker container and navigate to your project directory.
    1. Make necessary changes.
-   1. When you want to save your changes, simply commit and push them to GitHub from your **host machine**.
-   1. To run the code, navigate to the appropriate directory and run it in the terminal inside the **Docker container**.
-   1. All edits should be done on your **host machine** and all code execution should be done inside the **Docker container**.
+   1. When you want to save your changes, simply commit and push them to GitHub from the Docker terminal or the VS Code. The Docker is set up so that it uses your SSH agent from the host.
+   1. To run the code, navigate to the appropriate directory and run it in the terminal inside the Docker container.
 
-1. Datasets and models are also mounted into the container from the directories inside `docker/volumes` on your host machine to the `/root/resources/data` and `/root/resources/models` directories inside the container. Your code should use these locations to load data and models. To change or add new datasets or models, simply add them to the respective directories on your host machine.
+1. Datasets and models are **mounted** into the container from the directories inside `docker/volumes` on your host machine to the `/root/resources/data` and `/root/resources/models` directories inside the container. This means that any changes made on the host are immediately visible inside the container and vice versa. Your code should use these locations to load data and models. To change or add new datasets or models, simply add them to the respective directories on your host machine.
 
-1. When you are happy with your changes and want to test them on Raspberry Pis, push the code to GitHub from your host machine and pull them inside the container on the Raspberry Pis.
+1. When you are happy with your changes and want to test them on Raspberry Pis, push the code to GitHub from the container on your host machine and pull them inside the container on the Raspberry Pis.
    1. Use the tmuxinator config inside the launch directory to SSH into all Raspberry Pis in parallel:
       ```bash
+      cd ~/other_ws/xbee_dec_gnn/launch
       tmuxinator start -p tmux_ssh_pi.yml
       ```
-   1. You are now connected to each Raspberry's terminal. Start the docker container on each Raspberry Pi:
+   1. You are now connected to each Raspberry's terminal and they are all synchronized (i.e., commands typed in one terminal are replicated in all others). Start the docker container on each Raspberry Pi:
       ```bash
       docker start -i xbee_gnn_cont
       ```
@@ -112,6 +124,7 @@ To run the demo, follow these steps:
 
 1. Run the Xbee GNN code remotely on all Raspberry Pis using the tmuxinator config:
    ```bash
+   cd ~/other_ws/xbee_dec_gnn/launch
    tmuxinator start -p tmux_launch_mids.yml remote
    ```
    This command automatically SSHs into all Raspberry Pis in parallel, starts the Docker container, and runs the Xbee GNN code on each device.
@@ -120,6 +133,15 @@ To run the demo, follow these steps:
    ```bash
    ./docker/volumes/copy_to_rpi.sh
    ```
+
+## Summary
+1. Modify the Xbee code to match the functionality of the ROS 2 MIDS demo. Replace ROS 2 communication with Xbee communication. All changes should be made inside the Docker container on your host machine.
+1. When ready, push changes to GitHub from the Docker container on your host machine. SSH into all Raspberry Pis in parallel using tmuxinator, start the Docker container on each Pi, and pull the latest changes from GitHub.
+1. Run the Xbee GNN code on all Raspberry Pis using tmuxinator.
+1. Repeat steps 1-3 as necessary.
+1. Develop your own datasets and models, and add them to the `docker/volumes` directory on your host machine.
+1. Create a new branch in `ros2_dec_gnn` for your application and modify `node.py` code as necessary. Test the decentralized GNN on your dataset and model using ROS 2 inside the Docker container on your host machine.
+1. Test the decentralized GNN on your dataset and model using Xbee on Raspberry Pis. Follow the previous instructions to copy the dataset and models.
 
 ## Bonus section
 The provided Docker image comes with a few preinstalled tools and configs which may simplify your life.

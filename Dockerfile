@@ -93,7 +93,7 @@ RUN echo "source $HOME/ros2_ws/install/setup.bash" >> $HOME/.bashrc
 RUN echo "export ROS_DOMAIN_ID=${ROS_DOMAIN_ID}" >> $HOME/.bashrc
 
 # Copy the current project files into the container
-COPY xbee_dec_gnn ${OTHER_WS}/xbee_dec_gnn
+COPY . ${OTHER_WS}/xbee_dec_gnn
 
 # ------------------------------------------------------------
 # STAGE 3: FINAL (Mix in optional additions)
