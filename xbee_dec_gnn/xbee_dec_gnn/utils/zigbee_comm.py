@@ -1,8 +1,10 @@
 
-import time, json
+import json
+import time
+
 from digi.xbee.devices import ZigBeeDevice, ZigBeeNetwork
-from digi.xbee.models.address import XBee64BitAddress, XBee16BitAddress
 from digi.xbee.exception import TransmitException
+from digi.xbee.models.address import XBee16BitAddress, XBee64BitAddress
 
 
 class ZigBeeMessage():
@@ -10,19 +12,15 @@ class ZigBeeMessage():
         self.msg_name = msg_name
         self.payload = payload
 
-class ZigBeeNode():
-    def __init__(self, port, baud_rate):
-        self.communicator = ZigBeeCommunicator(port, baud_rate)
-        self.communicator.start()
-
-class ZigBeeCommunicator():
+class ZigbeeInterface():
     def __init__(self, port, baud_rate):
         self.port = port
         self.baud_rate = baud_rate
         self.network = None
 
-    def start(self):
         self.device = ZigBeeDevice(self.port, self.baud_rate)
+
+    def start(self):
         self.device.open()
         self.device.add_data_received_callback(self._data_receive_callback)
         self.network = self.device.get_network()

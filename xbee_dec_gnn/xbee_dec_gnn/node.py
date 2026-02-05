@@ -1,59 +1,36 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-import time, logging, json, threading, socket, argparse, torch, random
+import argparse
+import json
+import random
+import socket
+import threading
+import time
 from collections import defaultdict
-from typing import Dict, Any
-from digi.xbee.devices import ZigBeeDevice
-from digi.xbee.models.address import XBee64BitAddress, XBee16BitAddress
-from digi.xbee.exception import TransmitException, TimeoutException
+from typing import Any, Dict
 
 import networkx as nx
 import numpy as np
-from colorlog import ColoredFormatter
+import torch
+from digi.xbee.exception import TimeoutException, TransmitException
+from digi.xbee.models.address import XBee16BitAddress, XBee64BitAddress
 from prettytable import PrettyTable
 
 from xbee_dec_gnn.decentralized_gnns.dec_gnn import DecentralizedGNN
-from xbee_dec_gnn.utils.led_matrix import LEDMatrix
+from xbee_dec_gnn.encoder import decode_msg, encode_msg, pack_tensor, unpack_tensor
+from xbee_dec_gnn.utils import LEDMatrix, ObjectWithLogger, ZigbeeInterface
 
-from xbee_dec_gnn.encoder import encode_msg, decode_msg, pack_tensor, unpack_tensor
 
-
-def load_config(path: str) -> Dict[str, Any]:    # dodano TODO: move to utils.py or something
+def load_config(
+    path: str,
+) -> Dict[str, Any]:  # dodano TODO: move to utils.py or something
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
-class ObjectWithLogger:
-    def __init__(self):
-        formatter = ColoredFormatter(
-            "%(log_color)s%(asctime)s %(levelname)-8s%(reset)s %(message)s",
-            datefmt="%M:%S.%f",
-            reset=True,
-            log_colors={
-                "DEBUG": "cyan",
-                "INFO": "green",
-                "WARNING": "yellow",
-                "ERROR": "red",
-                "CRITICAL": "red",
-            },
-        )
-
-        self.logger = logging.getLogger("xbee_dec_gnn")
-        if not self.logger.handlers:
-            handler = logging.StreamHandler()
-            handler.setFormatter(formatter)
-            self.logger.addHandler(handler)
-
-        self.logger.setLevel(logging.DEBUG)
-        self.logger.propagate = False
-
-    def get_logger(self):
-        return self.logger
-
-
 
 class Node(ObjectWithLogger):
-    def __init__(self, port: str = '/dev/ttyUSB0', baud: int = 9600):
-        super().__init__()
+    def __init__(self, params):
+        super().__init__(logger_name="xbee_dec_gnn.node")
 
         # Unique identifier for the node. # DOC: We assume all nodes have the same format of the name.
         # self.node_id = node_id
@@ -83,24 +60,20 @@ class Node(ObjectWithLogger):
 
         self.stats = {"inference_time": [], "message_passing_time": [], "pooling_time": [], "round_time": []}
 
-        # TODO: Load parameters
-        default_model_path = "/root/other_ws/xbee_dec_gnn/xbee_dec_gnn/xbee_dec_gnn/data/MIDS_model.pth"
-        self.num_nodes = 3
-        self.gnn_model_path = default_model_path
+        # Load parameters
+        self.num_nodes = params.num_nodes
+        self.gnn_model_path = params.model_path
 
-        # # TODO: Load the GNN model. # DOC: Change this to customize how the model is loaded.
+        # Load the GNN model. # DOC: Change this to customize how the model is loaded.
         dist_model_kwargs = dict(pooling_protocol="consensus", consensus_sigma=1 / self.num_nodes)
         self.decentralized_model = DecentralizedGNN.from_simple_gnn_wrapper(self.gnn_model_path, **dist_model_kwargs)
 
         # Initialize the LED matrix if available.
         self.led = LEDMatrix()
 
-        self.port = port
-        self.baud = baud
-
         self.central_addr = None
 
-        self.device = ZigBeeDevice(port, baud)
+        self.zigbee = ZigbeeInterface(params.port, params.baud)
         self.bcast_lock = threading.Event()
         self.init_id_lock = threading.Event()
         self.graph_lock = threading.Event()
@@ -112,10 +85,7 @@ class Node(ObjectWithLogger):
             self.compute_gnn()
 
     def receive_message_xbee(self, xbee_message):
-        #check if message is json or pickled
-
-
-
+        # check if message is json or pickled
         try:
             msg = json.loads(xbee_message.data.decode("utf-8"))
         except Exception:
@@ -124,10 +94,7 @@ class Node(ObjectWithLogger):
         if msg.get("type") == "DISCOVERY":
             self.central_addr = msg.get("addr")
 
-            new_msg = {
-                "type" : "NODE_REGISTER",
-                "hostname" : self.hostname
-            }
+            new_msg = {"type": "NODE_REGISTER", "hostname": self.hostname}
 
             self.send_message_xbee(new_msg, msg.get("addr"), "CENTRAL")
 
@@ -138,10 +105,7 @@ class Node(ObjectWithLogger):
             self.id_to_addr = {int(k): v for k, v in msg["id_to_addr"].items()}
             self.node_id = msg.get("id")
 
-            new_msg = {
-                "type" : "ID_CONFIRM",
-                "id" : self.node_id
-            }
+            new_msg = {"type": "ID_CONFIRM", "id": self.node_id}
 
             self.send_message_xbee(new_msg, self.central_addr, "CENTRAL")
 
@@ -179,7 +143,6 @@ class Node(ObjectWithLogger):
             self._apply_graph_payload(graph_node_id, msg.get("n", []), msg.get("x"))
             return
 
-
         if msg.get("t") == "MP":
             self.receive_message_passing(msg)
             return
@@ -188,12 +151,12 @@ class Node(ObjectWithLogger):
             return
 
     def start(self):
-        self.device.open()
-        self.device.add_data_received_callback(self.receive_message_xbee)
-        self.get_logger().info("XBee receive timeout: %s seconds", self.device.get_sync_ops_timeout())
+        self.zigbee.device.open()
+        self.zigbee.device.add_data_received_callback(self.receive_message_xbee)
+        self.get_logger().info("XBee receive timeout: %s seconds", self.zigbee.device.get_sync_ops_timeout())
 
-        self.get_logger().info(f"Port: {self.port} @ {self.baud}")
-        self.get_logger().info(f"XBee addr64: {self.device.get_64bit_addr()}")
+        self.get_logger().info(f"Port: {self.zigbee.port} @ {self.zigbee.baud_rate}")
+        self.get_logger().info(f"XBee addr64: {self.zigbee.device.get_64bit_addr()}")
 
         self.get_logger().info("Waiting for DISCOVERY from central...")
 
@@ -235,9 +198,9 @@ class Node(ObjectWithLogger):
         # Use provided node_id, fallback to self.node_id
         if node_id is not None:
             self.node_id = node_id
-        
+
         self.get_logger().info("Graph received: id=%s neighbors=%s", self.node_id, neighbors)
-        
+
         self.local_subgraph = nx.Graph()
         self.local_subgraph.add_node(self.node_id)
         for nb in neighbors:
@@ -271,14 +234,13 @@ class Node(ObjectWithLogger):
                 # self.get_logger().debug("Waiting for MP layer %d: %d/%d received", layer, len(self.received_mp[layer]), len(self.active_neighbors))
                 time.sleep(0.1)
 
-
             # Update the node's representation using the GNN layer.
             neighbor_values = list(self.received_mp[key].values())
             inference_start = time.perf_counter()
             node_value = self.decentralized_model.update_gnn(layer, node_value, neighbor_values)
             inference_time += time.perf_counter() - inference_start
             del self.received_mp[key]
-            
+
             self.get_logger().debug("MP layer %d complete", layer)
 
         self.stats["inference_time"].append(inference_time)
@@ -324,7 +286,7 @@ class Node(ObjectWithLogger):
         with torch.no_grad():
             graph_value = self.decentralized_model.predictor_model(graph_value)
         return graph_value
-    
+
     def send_message_xbee(self, msg, addr, node_id):
         data = json.dumps(msg).encode("utf-8")
 
@@ -335,7 +297,7 @@ class Node(ObjectWithLogger):
         ok = False
         for attempt in range(1, 5):
             try:
-                self.device.send_data_64_16(addr, XBee16BitAddress.UNKNOWN_ADDRESS, data)
+                self.zigbee.device.send_data_64_16(addr, XBee16BitAddress.UNKNOWN_ADDRESS, data)
                 ok = True
                 if attempt == 1:
                     self.get_logger().debug("TX: %s -> node %s", msg_type, node_id)
@@ -355,14 +317,7 @@ class Node(ObjectWithLogger):
     def send_message_passing(self, layer: int, value: torch.Tensor):
 
         blob, shape = pack_tensor(value)
-        msg = {
-            "t": "MP",
-            "id" : self.node_id,
-            "i" : layer,
-            "r" : self.round_counter,
-            "x" : blob,
-            "s" : shape
-        }
+        msg = {"t": "MP", "id": self.node_id, "i": layer, "r": self.round_counter, "x": blob, "s": shape}
 
         data = encode_msg(msg)
 
@@ -379,12 +334,14 @@ class Node(ObjectWithLogger):
             time_wait_exc = 0.05
             for attempt in range(1, 5):
                 try:
-                    self.device.send_data_64_16(addr, XBee16BitAddress.UNKNOWN_ADDRESS, data)
+                    self.zigbee.device.send_data_64_16(addr, XBee16BitAddress.UNKNOWN_ADDRESS, data)
                     ok = True
                     if attempt == 1:
                         self.get_logger().debug("TX: %s -> node %s", "MP at iteration " + str(layer), node_id)
                     else:
-                        self.get_logger().debug("TX: %s -> node %s (retry %d)", "MP at iteration " + str(layer), node_id, attempt)
+                        self.get_logger().debug(
+                            "TX: %s -> node %s (retry %d)", "MP at iteration " + str(layer), node_id, attempt
+                        )
                     break
                 except (TransmitException, TimeoutException) as e:
                     status = getattr(e, "transmit_status", None) or getattr(e, "status", None)
@@ -396,7 +353,7 @@ class Node(ObjectWithLogger):
                 self.get_logger().error("TX gave up: %s to node %s", "MP", node_id)
             time.sleep(0.05)
 
-    def receive_message_passing(self, msg):        
+    def receive_message_passing(self, msg):
         r = msg["r"]
         layer = msg["i"]
         sender = msg["id"]
@@ -406,18 +363,18 @@ class Node(ObjectWithLogger):
 
         self.get_logger().debug(
             "RX: MP stored from node %s (r=%s, layer=%s) now %d/%d",
-            sender, r, layer, len(self.received_mp[(r, layer)]), len(self.active_neighbors)
+            sender,
+            r,
+            layer,
+            len(self.received_mp[(r, layer)]),
+            len(self.active_neighbors),
         )
 
     def send_pooling(self, iteration: int, value: dict[str, torch.Tensor] | torch.Tensor):
-        msg = {
-            "t": "pooling",
-            "id" : self.node_id,
-            "i" : iteration
-        }
+        msg = {"t": "pooling", "id": self.node_id, "i": iteration}
 
         if isinstance(value, dict):  # This enables pooling by flooding
-            msg["ss"] = list(value.keys()) # sources
+            msg["ss"] = list(value.keys())  # sources
 
             data = torch.stack(list(value.values()), dim=0)
             msg["x"], msg["s"] = pack_tensor(data)
@@ -435,7 +392,7 @@ class Node(ObjectWithLogger):
             ok = False
             for attempt in range(1, 5):
                 try:
-                    self.device.send_data_64_16(addr, XBee16BitAddress.UNKNOWN_ADDRESS, data)
+                    self.zigbee.device.send_data_64_16(addr, XBee16BitAddress.UNKNOWN_ADDRESS, data)
                     ok = True
                     if attempt == 1:
                         self.get_logger().debug("TX: %s -> node %s", "pooling", node_id)
@@ -468,7 +425,7 @@ class Node(ObjectWithLogger):
             self.get_logger().info("Waiting for neighbors...")
             time.sleep(1.0)
             return
-        
+
         time.sleep(1)
 
         self.round_counter += 1
@@ -513,7 +470,7 @@ class Node(ObjectWithLogger):
         self.get_logger().info("\n%s", table)
 
     def stop(self):
-        self.device.close()
+        self.zigbee.device.close()
         self.get_logger().info("Node stopped.")
         # self.print_stats()
         self.led.exit()
@@ -523,9 +480,13 @@ def main(args=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", default="/dev/ttyUSB0")
     parser.add_argument("--baud", type=int, default=9600)
+    parser.add_argument(
+        "--model-path", default="/root/other_ws/xbee_dec_gnn/xbee_dec_gnn/xbee_dec_gnn/data/MIDS_model.pth"
+    )
+    parser.add_argument("--num-nodes", type=int, default=5)
     cli_args = parser.parse_args(args=args)
 
-    gnn_node = Node(port=cli_args.port, baud=cli_args.baud)
+    gnn_node = Node(params=cli_args)
     gnn_node.start()
     try:
         gnn_node.run()
