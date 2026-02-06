@@ -111,7 +111,7 @@ class Node(ObjectWithLogger):
     def _handle_graph(self, msg: GraphMessage):
         """Handle GRAPH message with topology and features."""
         # Use provided node_id, fallback to self.node_id
-        self.get_logger().info(f"Graph received: id={self.node_id} neighbors={msg.neighbors}")
+        self.get_logger().info(f"Graph received: neighbors={msg.neighbors}")
 
         self.local_subgraph = nx.Graph()
         self.local_subgraph.add_node(self.node_id)
@@ -130,7 +130,7 @@ class Node(ObjectWithLogger):
 
     def _handle_mp(self, msg: DataExchangeMessage):
         """Handle message passing (MP) message."""
-        r = msg.round_id
+        round = msg.round_id
         layer = msg.layer
         sender = msg.sender_name
 
@@ -139,11 +139,11 @@ class Node(ObjectWithLogger):
             return
 
         tensor_data = unpack_tensor(msg.data, msg.shape)
-        self.received_mp[(r, layer)][sender] = tensor_data
+        self.received_mp[(round, layer)][sender] = tensor_data
 
         self.get_logger().debug(
-            f"RX: MP stored from node {sender} (r={r}, layer={layer}) "
-            f"now {len(self.received_mp[(r, layer)])}/{len(self.active_neighbors)}"
+            f"RX: MP stored from node {sender} (r={round}, l={layer}) "
+            f"now {len(self.received_mp[(round, layer)])}/{len(self.active_neighbors)}"
         )
 
     def _handle_pooling(self, msg: DataExchangeMessage):

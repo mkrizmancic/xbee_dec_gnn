@@ -121,6 +121,9 @@ class DataExchangeMessage(MessageBase):
         self.shape = shape
         self.sources = sources
 
+    def summary(self) -> str:
+        return super().summary() + f"(round={self.round_id}, layer={self.layer})"
+
     @classmethod
     def for_message_passing(
         cls,
@@ -228,7 +231,7 @@ class XBeePublisher:
         for attempt in range(1, self.num_retries + 1):
             try:
                 self.device.send_data_64_16(self.target_addr, XBee16BitAddress.UNKNOWN_ADDRESS, data)
-                attempt_info = f" (attempt {attempt})" if self.num_retries > 1 else ""
+                attempt_info = f" (attempt {attempt})" if attempt > 1 else ""
                 self.logger.debug(f"TX: {msg.summary()} -> {self.target_name}{attempt_info}")
                 ok = True
                 break
@@ -369,8 +372,6 @@ class ZigbeeNodeInterface(ZigbeeInterfaceBase):
                 self._handshake_complete = True
                 self._handshake_event.set()
 
-            self.logger.info("Handshake complete: ready for communication")
-
     def _send_handshake_message(self, msg: HandshakeMessage):
         if self.central_addr is None:
             self.logger.error("Cannot send handshake message: central address unknown")
@@ -390,7 +391,7 @@ class ZigbeeNodeInterface(ZigbeeInterfaceBase):
         success = self._handshake_event.wait(timeout=timeout)
 
         if success:
-                self.logger.info(f"Handshake complete: node_name={self.node_name}")
+                self.logger.info("Handshake complete. Ready for communication.")
         else:
             self.logger.error(f"Handshake timeout after {timeout:.1f}s")
 
