@@ -1,31 +1,25 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import argparse
-import json
-import random
 import socket
 import threading
 import time
 from collections import defaultdict
-from typing import Any, Dict
 
 import networkx as nx
 import numpy as np
 import torch
-from digi.xbee.exception import TimeoutException, TransmitException
-from digi.xbee.models.address import XBee16BitAddress, XBee64BitAddress
 from prettytable import PrettyTable
 
 from xbee_dec_gnn.decentralized_gnns.dec_gnn import DecentralizedGNN
-from xbee_dec_gnn.encoder import decode_msg, encode_msg, pack_tensor, unpack_tensor
-from xbee_dec_gnn.utils import LEDMatrix, ObjectWithLogger, ZigbeeInterface
-
-
-def load_config(
-    path: str,
-) -> Dict[str, Any]:  # dodano TODO: move to utils.py or something
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+from xbee_dec_gnn.encoder import pack_tensor, unpack_tensor
+from xbee_dec_gnn.utils import LEDMatrix, ObjectWithLogger
+from xbee_dec_gnn.utils.zigbee_comm import (
+    DataExchangeMessage,
+    GraphMessage,
+    Topic,
+    ZigbeeInterface,
+)
 
 
 class Node(ObjectWithLogger):
@@ -35,14 +29,16 @@ class Node(ObjectWithLogger):
         # Unique identifier for the node. # DOC: We assume all nodes have the same format of the name.
         # self.node_id = node_id
         self.node_prefix = "node_"
-        self.hostname = socket.gethostname()
-        self.node_name = self.node_prefix + self.hostname
-        self.node_id = None
+        self.node_id = params.node_id or socket.gethostname()[-1]
+        try:
+            self.node_id = int(self.node_id)
+        except (TypeError, ValueError):
+            pass
+        self.node_name = self.node_prefix + str(self.node_id)
         self.id_to_addr = None
         self.data = None
 
-        self.get_logger().info("Node online: hostname=%s", self.hostname)
-        # print getReceivedTimout
+        self.get_logger().info(f"Node online: {self.node_name}")
 
         self.value = torch.Tensor()  # The current representation of the node.
         self.output = torch.Tensor()  # The interpretable output of the GNN after each layer.
@@ -54,9 +50,6 @@ class Node(ObjectWithLogger):
         self.round_counter = 0
         self.local_subgraph = nx.Graph()
         self.active_neighbors = []
-
-        # cfg = load_config('config.json')
-        # self.id_to_addr = cfg["id_to_addr"]
 
         self.stats = {"inference_time": [], "message_passing_time": [], "pooling_time": [], "round_time": []}
 
@@ -71,12 +64,104 @@ class Node(ObjectWithLogger):
         # Initialize the LED matrix if available.
         self.led = LEDMatrix()
 
-        self.central_addr = None
-
-        self.zigbee = ZigbeeInterface(params.port, params.baud)
-        self.bcast_lock = threading.Event()
-        self.init_id_lock = threading.Event()
+        self.zigbee = ZigbeeInterface(
+            params.port,
+            params.baud,
+            self.node_name,
+            self.num_nodes,
+            node_id=self.node_id,
+            logger=self.get_logger(),
+        )
         self.graph_lock = threading.Event()
+
+        # Publisher dictionaries (initialized after handshake completes)
+        self.mp_pubs = {}
+        self.pooling_pubs = {}
+
+        # Register message handlers (only application-level messages)
+        self.zigbee.register_handler(Topic.GRAPH, self._handle_graph)
+        self.zigbee.register_handler(Topic.MP, self._handle_mp)
+        self.zigbee.register_handler(Topic.POOLING, self._handle_pooling)
+
+    def _init_neighbor_publishers(self):
+        """
+        Initialize publishers for message passing and pooling to all neighbors.
+        Called after handshake is complete.
+        """
+        for neighbor_id in range(self.num_nodes):
+            if neighbor_id == self.node_id:
+                continue  # Skip self
+
+            # Create message passing publisher (ZigbeeInterface handles address resolution)
+            self.mp_pubs[neighbor_id] = self.zigbee.create_publisher(
+                target_node_id=neighbor_id,
+                topic=Topic.MP,
+            )
+
+            # Create pooling publisher
+            self.pooling_pubs[neighbor_id] = self.zigbee.create_publisher(
+                target_node_id=neighbor_id,
+                topic=Topic.POOLING,
+            )
+
+        self.get_logger().info("Initialized publishers for %d neighbors", len(self.mp_pubs))
+
+
+    def _handle_graph(self, msg: GraphMessage):
+        """Handle GRAPH message with topology and features."""
+        # Use provided node_id, fallback to self.node_id
+        self.get_logger().info("Graph received: id=%s neighbors=%s", self.node_id, msg.neighbors)
+
+        self.local_subgraph = nx.Graph()
+        self.local_subgraph.add_node(self.node_id)
+        for nb in msg.neighbors:
+            self.local_subgraph.add_edge(self.node_id, nb)
+
+        if msg.features is None:
+            raise ValueError("Missing node features in GRAPH message")
+
+        x_tensor = torch.tensor(msg.features, dtype=torch.float32)
+        if x_tensor.ndim == 1:
+            x_tensor = x_tensor.unsqueeze(0)
+
+        self.data = x_tensor
+        self.graph_lock.set()
+
+    def _handle_mp(self, msg: DataExchangeMessage):
+        """Handle message passing (MP) message."""
+        r = msg.round_id
+        layer = msg.layer
+        sender = msg.sender_name
+
+        if msg.data is None or msg.shape is None:
+            self.get_logger().warning("MP message missing data or shape")
+            return
+
+        tensor_data = unpack_tensor(msg.data, msg.shape)
+        self.received_mp[(r, layer)][sender] = tensor_data
+
+        self.get_logger().debug(
+            "RX: MP stored from node %s (r=%s, layer=%s) now %d/%d",
+            sender,
+            r,
+            layer,
+            len(self.received_mp[(r, layer)]),
+            len(self.active_neighbors),
+        )
+
+    def _handle_pooling(self, msg: DataExchangeMessage):
+        """Handle pooling message."""
+        sources = msg.sources or []
+        if msg.data is None or msg.shape is None:
+            self.get_logger().warning("Pooling message missing data or shape")
+            return
+
+        data = unpack_tensor(msg.data, msg.shape)
+        if len(sources) > 0:
+            tensor_data = {source: data[i] for i, source in enumerate(sources)}
+        else:
+            tensor_data = data
+        self.received_pooling[msg.iteration][msg.sender_name] = tensor_data
 
     def run(self):
         # Main loop of the node.
@@ -84,87 +169,26 @@ class Node(ObjectWithLogger):
             time.sleep(0.1)
             self.compute_gnn()
 
-    def receive_message_xbee(self, xbee_message):
-        # check if message is json or pickled
-        try:
-            msg = json.loads(xbee_message.data.decode("utf-8"))
-        except Exception:
-            msg = decode_msg(xbee_message.data)
-
-        if msg.get("type") == "DISCOVERY":
-            self.central_addr = msg.get("addr")
-
-            new_msg = {"type": "NODE_REGISTER", "hostname": self.hostname}
-
-            self.send_message_xbee(new_msg, msg.get("addr"), "CENTRAL")
-
-            self.bcast_lock.set()
-            return
-
-        if msg.get("type") == "REGISTER_ACK":
-            self.id_to_addr = {int(k): v for k, v in msg["id_to_addr"].items()}
-            self.node_id = msg.get("id")
-
-            new_msg = {"type": "ID_CONFIRM", "id": self.node_id}
-
-            self.send_message_xbee(new_msg, self.central_addr, "CENTRAL")
-
-            self.node_name = self.node_prefix + str(self.node_id)
-
-            self.init_id_lock.set()
-            return
-
-        if msg.get("type") == "GRAPH":
-            # Legacy full-graph payload (graph6 + full feature matrix)
-            if "graph6_str" in msg:
-                G = nx.from_graph6_bytes(bytes(msg["graph6_str"].strip(), "ascii"))
-                self.local_subgraph = G.subgraph([self.node_id] + list(G.neighbors(self.node_id)))
-
-                lambda2 = nx.laplacian_spectrum(G)[1]
-                self.get_logger().debug(
-                    "RX: GRAPH received (\u03bb\u2082=%.4f, nodes=%d, edges=%d)",
-                    lambda2,
-                    G.number_of_nodes(),
-                    G.number_of_edges(),
-                )
-
-                self.data = torch.tensor(msg.get("data")).reshape(tuple(msg.get("shape")))
-                self.graph_lock.set()
-                return
-
-            # Compact per-node payload (neighbors + own features)
-            if "n" in msg and "x" in msg:
-                graph_node_id = msg.get("id", self.node_id)
-                self._apply_graph_payload(graph_node_id, msg.get("n", []), msg.get("x"))
-                return
-
-        if msg.get("t") == "G":  # short type for compact payloads
-            graph_node_id = msg.get("id", self.node_id)
-            self._apply_graph_payload(graph_node_id, msg.get("n", []), msg.get("x"))
-            return
-
-        if msg.get("t") == "MP":
-            self.receive_message_passing(msg)
-            return
-        if msg.get("t") == "pooling":
-            self.receive_pooling(msg)
-            return
-
     def start(self):
-        self.zigbee.device.open()
-        self.zigbee.device.add_data_received_callback(self.receive_message_xbee)
+        self.zigbee.start()
         self.get_logger().info("XBee receive timeout: %s seconds", self.zigbee.device.get_sync_ops_timeout())
-
         self.get_logger().info(f"Port: {self.zigbee.port} @ {self.zigbee.baud_rate}")
         self.get_logger().info(f"XBee addr64: {self.zigbee.device.get_64bit_addr()}")
 
-        self.get_logger().info("Waiting for DISCOVERY from central...")
+        # Wait for handshake to complete (handled internally by ZigbeeInterface)
+        if not self.zigbee.wait_for_handshake(timeout=30.0):
+            raise RuntimeError("Handshake failed or timed out")
 
-        self.bcast_lock.wait()
-        self.get_logger().info("Handshake: DISCOVERY received; INIT sent; awaiting REGISTER_ACK (id assignment)")
+        # Get assigned node ID and update node name
+        self.node_id = self.zigbee.get_node_id()
+        self.node_name = self.node_prefix + str(self.node_id)
+        self.get_logger().info("Handshake complete: node_id=%s, node_name=%s", self.node_id, self.node_name)
 
-        self.init_id_lock.wait()
-        self.get_logger().info("Handshake: REGISTER_ACK received; ID_CONFIRM sent; awaiting GRAPH payload")
+        # Initialize publishers to neighbors
+        self._init_neighbor_publishers()
+
+        # Wait for GRAPH message before starting GNN
+        self.get_logger().info("Waiting for GRAPH payload...")
 
         self.graph_lock.wait()
         self.get_logger().info("Setup complete: graph/features loaded; starting GNN loop")
@@ -193,28 +217,6 @@ class Node(ObjectWithLogger):
         # Compute the initial feature vector for this node (already received over XBee).
         self.value = self.data
         return self.value
-
-    def _apply_graph_payload(self, node_id, neighbors, features):
-        # Use provided node_id, fallback to self.node_id
-        if node_id is not None:
-            self.node_id = node_id
-
-        self.get_logger().info("Graph received: id=%s neighbors=%s", self.node_id, neighbors)
-
-        self.local_subgraph = nx.Graph()
-        self.local_subgraph.add_node(self.node_id)
-        for nb in neighbors:
-            self.local_subgraph.add_edge(self.node_id, nb)
-
-        if features is None:
-            raise ValueError("Missing node features in GRAPH message")
-
-        x_tensor = torch.tensor(features, dtype=torch.float32)
-        if x_tensor.ndim == 1:
-            x_tensor = x_tensor.unsqueeze(0)
-
-        self.data = x_tensor
-        self.graph_lock.set()
 
     def run_message_passing(self, initial_features: torch.Tensor):
         inference_time = 0.0
@@ -287,137 +289,55 @@ class Node(ObjectWithLogger):
             graph_value = self.decentralized_model.predictor_model(graph_value)
         return graph_value
 
-    def send_message_xbee(self, msg, addr, node_id):
-        data = json.dumps(msg).encode("utf-8")
-
-        if isinstance(addr, str):
-            addr = XBee64BitAddress.from_hex_string(addr)
-
-        msg_type = msg.get("type")
-        ok = False
-        for attempt in range(1, 5):
-            try:
-                self.zigbee.device.send_data_64_16(addr, XBee16BitAddress.UNKNOWN_ADDRESS, data)
-                ok = True
-                if attempt == 1:
-                    self.get_logger().debug("TX: %s -> node %s", msg_type, node_id)
-                else:
-                    self.get_logger().debug("TX: %s -> node %s (retry %d)", msg_type, node_id, attempt)
-                break
-            except TransmitException as e:
-                status = getattr(e, "transmit_status", None) or getattr(e, "status", None)
-                self.get_logger().warning("TX fail: %s (attempt %d, %s)", msg_type, attempt, status)
-                time.sleep(0.1)
-
-        if not ok:
-            self.get_logger().error("TX gave up: %s to node %s", msg_type, node_id)
-
-        time.sleep(0.05)
-
     def send_message_passing(self, layer: int, value: torch.Tensor):
+        """
+        Send message passing values to all active neighbors.
 
+        Args:
+            layer: GNN layer index
+            value: node representation tensor
+        """
         blob, shape = pack_tensor(value)
-        msg = {"t": "MP", "id": self.node_id, "i": layer, "r": self.round_counter, "x": blob, "s": shape}
-
-        data = encode_msg(msg)
-
-        for neighbor in self.active_neighbors:
-            time.sleep(random.uniform(0.05, 0.2))
-
-            node_id = neighbor
-            addr = self.id_to_addr[neighbor]
-
-            if isinstance(addr, str):
-                addr = XBee64BitAddress.from_hex_string(addr)
-
-            ok = False
-            time_wait_exc = 0.05
-            for attempt in range(1, 5):
-                try:
-                    self.zigbee.device.send_data_64_16(addr, XBee16BitAddress.UNKNOWN_ADDRESS, data)
-                    ok = True
-                    if attempt == 1:
-                        self.get_logger().debug("TX: %s -> node %s", "MP at iteration " + str(layer), node_id)
-                    else:
-                        self.get_logger().debug(
-                            "TX: %s -> node %s (retry %d)", "MP at iteration " + str(layer), node_id, attempt
-                        )
-                    break
-                except (TransmitException, TimeoutException) as e:
-                    status = getattr(e, "transmit_status", None) or getattr(e, "status", None)
-                    self.get_logger().warning("TX fail: %s (attempt %d, %s)", "MP", attempt, status)
-                    time.sleep(time_wait_exc)
-                    time_wait_exc *= 2  # Exponential backoff
-
-            if not ok:
-                self.get_logger().error("TX gave up: %s to node %s", "MP", node_id)
-            time.sleep(0.05)
-
-    def receive_message_passing(self, msg):
-        r = msg["r"]
-        layer = msg["i"]
-        sender = msg["id"]
-
-        tensor_data = unpack_tensor(msg["x"], msg["s"])
-        self.received_mp[(r, layer)][sender] = tensor_data
-
-        self.get_logger().debug(
-            "RX: MP stored from node %s (r=%s, layer=%s) now %d/%d",
-            sender,
-            r,
-            layer,
-            len(self.received_mp[(r, layer)]),
-            len(self.active_neighbors),
+        msg = DataExchangeMessage.for_message_passing(
+            sender_name=self.node_name,
+            layer=layer,
+            round_id=self.round_counter,
+            data=blob,
+            shape=shape,
         )
 
-    def send_pooling(self, iteration: int, value: dict[str, torch.Tensor] | torch.Tensor):
-        msg = {"t": "pooling", "id": self.node_id, "i": iteration}
-
-        if isinstance(value, dict):  # This enables pooling by flooding
-            msg["ss"] = list(value.keys())  # sources
-
-            data = torch.stack(list(value.values()), dim=0)
-            msg["x"], msg["s"] = pack_tensor(data)
-        else:
-            msg["x"], msg["s"] = pack_tensor(value)
-
-        data = encode_msg(msg)
         for neighbor in self.active_neighbors:
-            node_id = neighbor
-            addr = self.id_to_addr[neighbor]
+            self.mp_pubs[neighbor].publish(msg, add_random_delay=True)
 
-            if isinstance(addr, str):
-                addr = XBee64BitAddress.from_hex_string(addr)
+    def send_pooling(self, iteration: int, value: dict[str, torch.Tensor] | torch.Tensor):
+        """
+        Send pooling values to all active neighbors.
 
-            ok = False
-            for attempt in range(1, 5):
-                try:
-                    self.zigbee.device.send_data_64_16(addr, XBee16BitAddress.UNKNOWN_ADDRESS, data)
-                    ok = True
-                    if attempt == 1:
-                        self.get_logger().debug("TX: %s -> node %s", "pooling", node_id)
-                    else:
-                        self.get_logger().debug("TX: %s -> node %s (retry %d)", "pooling", node_id, attempt)
-                    break
-                except (TransmitException, TimeoutException) as e:
-                    status = getattr(e, "transmit_status", None) or getattr(e, "status", None)
-                    self.get_logger().warning("TX fail: %s (attempt %d, %s)", "pooling", attempt, status)
-                    time.sleep(0.1)
-
-            if not ok:
-                self.get_logger().error("TX gave up: %s to node %s", "pooling", node_id)
-            time.sleep(0.05)
-
-    def receive_pooling(self, msg):
-        sources = msg.get("ss", [])
-        if len(sources) > 0:
-            # Reconstruct dict of tensors from flattened data and shape
-            data = torch.tensor(msg["x"]).reshape(tuple(msg["s"]))
-            tensor_data = {source: data[i] for i, source in enumerate(sources)}
+        Args:
+            iteration: pooling iteration index
+            value: pooling value (single tensor or dict of tensors)
+        """
+        if isinstance(value, dict):  # This enables pooling by flooding
+            data = torch.stack(list(value.values()), dim=0)
+            payload, shape = pack_tensor(data)
+            msg = DataExchangeMessage.for_pooling(
+                sender_name=self.node_name,
+                iteration=iteration,
+                data=payload,
+                shape=shape,
+                sources=list(value.keys()),
+            )
         else:
-            # Reconstruct tensor from flattened data and shape
-            tensor_data = torch.tensor(msg["x"]).reshape(tuple(msg["s"]))
-        self.received_pooling[msg["i"]][msg["id"]] = tensor_data
+            payload, shape = pack_tensor(value)
+            msg = DataExchangeMessage.for_pooling(
+                sender_name=self.node_name,
+                iteration=iteration,
+                data=payload,
+                shape=shape,
+            )
+
+        for neighbor in self.active_neighbors:
+            self.pooling_pubs[neighbor].publish(msg, add_random_delay=False)
 
     def compute_gnn(self):
         ready = self.get_neighbors()
@@ -425,8 +345,6 @@ class Node(ObjectWithLogger):
             self.get_logger().info("Waiting for neighbors...")
             time.sleep(1.0)
             return
-
-        time.sleep(1)
 
         self.round_counter += 1
         self.get_logger().info("─" * 40)
@@ -484,6 +402,7 @@ def main(args=None):
         "--model-path", default="/root/other_ws/xbee_dec_gnn/xbee_dec_gnn/xbee_dec_gnn/data/MIDS_model.pth"
     )
     parser.add_argument("--num-nodes", type=int, default=5)
+    parser.add_argument("--node-id", type=str, default=None, help="Unique identifier for this node")
     cli_args = parser.parse_args(args=args)
 
     gnn_node = Node(params=cli_args)
