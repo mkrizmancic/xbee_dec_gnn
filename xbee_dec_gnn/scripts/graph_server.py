@@ -5,7 +5,6 @@ import logging
 import random
 import threading
 import time
-from pathlib import Path
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -16,8 +15,6 @@ from matplotlib.widgets import Button
 from torch_geometric.data import InMemoryDataset
 from xbee_dec_gnn.utils import ObjectWithLogger
 from xbee_dec_gnn.utils.zigbee_comm import GraphMessage, ZigbeeServerInterface
-
-ROOT = Path("~/other_ws/xbee_dec_gnn").expanduser()
 
 
 class GraphGenerator(ObjectWithLogger):
@@ -39,7 +36,7 @@ class GraphGenerator(ObjectWithLogger):
 
         # Load graph dataset and select appropriate size range
         self.dataset = InMemoryDataset()
-        self.dataset.load(str(ROOT / "xbee_dec_gnn" / "xbee_dec_gnn" / "data" / "MIDS_data.pt"))
+        self.dataset.load("/root/resources/data/MIDS_data.pt")
         dataset_range = {}
         curr_index = 0
         for size, num_graphs in zip(range(3, 9), [2, 6, 21, 112, 853, 11117]):
@@ -299,9 +296,6 @@ def main(args):
         gui_mode=args.gui,
         baud_rate=args.baud,
         port=args.port,
-        config=args.config,
-        feature_dim=args.feature_dim,
-        graph_size=args.graph_size,
     )
 
     try:
@@ -369,7 +363,6 @@ if __name__ == "__main__":
     )
     args.add_argument("--port", default="/dev/ttyUSB0")
     args.add_argument("--baud", type=int, default=9600)
-    args.add_argument("--config", default="/root/other_ws/xbee_dec_gnn/xbee_dec_gnn/scripts/config.json")
     args.add_argument(
         "--feature-dim",
         type=int,

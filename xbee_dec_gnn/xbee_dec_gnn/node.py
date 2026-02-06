@@ -398,9 +398,7 @@ def main(args=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", default="/dev/ttyUSB0")
     parser.add_argument("--baud", type=int, default=9600)
-    parser.add_argument(
-        "--model-path", default="/root/other_ws/xbee_dec_gnn/xbee_dec_gnn/xbee_dec_gnn/data/MIDS_model.pth"
-    )
+    parser.add_argument("--model-path", default="/root/resources/models/MIDS_model.pth")
     parser.add_argument("--num-nodes", type=int, default=5)
     parser.add_argument("--node-id", type=str, default=None, help="Unique identifier for this node")
     cli_args = parser.parse_args(args=args)
