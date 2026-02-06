@@ -207,6 +207,9 @@ class XBeePublisher:
         self.target_name = target_name
         self.topic = topic
 
+        self.num_retries = 5
+        self.base_backoff = 0.05
+
         if isinstance(target_addr, str):
             self.target_addr = XBee64BitAddress.from_hex_string(target_addr)
         else:
@@ -221,31 +224,23 @@ class XBeePublisher:
         data = msg.to_bytes(topic_override=self.topic)
 
         ok = False
-        backoff_delay = 0.05
-        for attempt in range(1, 5):
+        backoff_delay = self.base_backoff
+        for attempt in range(1, self.num_retries + 1):
             try:
                 self.device.send_data_64_16(self.target_addr, XBee16BitAddress.UNKNOWN_ADDRESS, data)
+                attempt_info = f" (attempt {attempt})" if self.num_retries > 1 else ""
+                self.logger.debug(f"TX: {msg.summary()} -> {self.target_name}{attempt_info}")
                 ok = True
-                if attempt == 1:
-                    self.logger.debug(f"TX: {msg.summary()} -> {self.target_name}")
-                else:
-                    self.logger.debug(
-                        f"TX: {msg.summary()} -> {self.target_name} (retry {attempt})"
-                    )
                 break
             except (TransmitException, TimeoutException) as exc:
                 status = getattr(exc, "transmit_status", None) or getattr(exc, "status", None)
-                self.logger.warning(
-                    f"TX fail: {msg.summary()} (attempt {attempt}, {status})"
-                )
-                if attempt < 4:
+                self.logger.warning(f"TX fail: {msg.summary()} (attempt {attempt}, {status})")
+                if attempt < self.num_retries:
                     time.sleep(backoff_delay)
                     backoff_delay *= 2
 
         if not ok:
             self.logger.error(f"TX gave up: {msg.summary()} to {self.target_name}")
-
-        time.sleep(0.05)
 
         return ok
 
@@ -348,7 +343,7 @@ class ZigbeeNodeInterface(ZigbeeInterfaceBase):
     def _handle_handshake(self, msg: HandshakeMessage):
         if msg.step == HandshakeStep.DISCOVERY:
             self.central_addr = msg.sender_addr
-            self.logger.info("Handshake: DISCOVERY received from central server")
+            self.logger.info("[HANDSHAKE:DISCOVERY] Received ping from central server.")
 
             response = HandshakeMessage(
                 step=HandshakeStep.REGISTER,
@@ -362,10 +357,10 @@ class ZigbeeNodeInterface(ZigbeeInterfaceBase):
             self.addr_map = msg.addr_map
 
             if not self.addr_map:
-                self.logger.error("Handshake: received empty addr_map in ACK")
+                self.logger.error("[HANDSHAKE:ACK] Received empty addr_map.")
                 return
 
-            self.logger.info(f"Handshake: Received {len(self.addr_map)} peer addresses")
+            self.logger.info(f"[HANDSHAKE:ACK] Received {len(self.addr_map)} peer addresses.")
 
             response = HandshakeMessage(step=HandshakeStep.CONFIRM, sender_name=self.node_name)
             self._send_handshake_message(response)
@@ -388,7 +383,7 @@ class ZigbeeNodeInterface(ZigbeeInterfaceBase):
             topic=Topic.HANDSHAKE,
             logger=self.logger,
         )
-        handshake_pub.publish(msg, add_random_delay=False)
+        handshake_pub.publish(msg, add_random_delay=True)
 
     def wait_for_handshake(self, timeout=30.0):
         self.logger.info("Waiting for handshake to complete...")
@@ -480,7 +475,7 @@ class ZigbeeCentralInterface(ZigbeeInterfaceBase):
         self.logger.info("Handshake: broadcasting DISCOVERY; waiting for INIT from nodes")
 
         msg = HandshakeMessage(step=HandshakeStep.DISCOVERY, sender_addr=my_addr)
-        interval_s = 1.0
+        interval_s = 5.0
         start_time = time.time()
 
         while not self._reg_event.is_set():

@@ -94,13 +94,13 @@ class Node(ObjectWithLogger):
             neighbor_name = f"{self.node_prefix}{neighbor_id}"
 
             # Create message passing publisher (ZigbeeInterface handles address resolution)
-            self.mp_pubs[neighbor_id] = self.zigbee.create_publisher(
+            self.mp_pubs[neighbor_name] = self.zigbee.create_publisher(
                 target_name=neighbor_name,
                 topic=Topic.MP,
             )
 
             # Create pooling publisher
-            self.pooling_pubs[neighbor_id] = self.zigbee.create_publisher(
+            self.pooling_pubs[neighbor_name] = self.zigbee.create_publisher(
                 target_name=neighbor_name,
                 topic=Topic.POOLING,
             )
@@ -177,9 +177,6 @@ class Node(ObjectWithLogger):
         # Wait for handshake to complete (handled internally by ZigbeeInterface)
         if not self.zigbee.wait_for_handshake(timeout=30.0):
             raise RuntimeError("Handshake failed or timed out")
-
-        self.get_logger().info(f"Handshake complete: node_name={self.node_name}"
-        )
 
         # Initialize publishers to neighbors
         self._init_neighbor_publishers()
@@ -303,12 +300,12 @@ class Node(ObjectWithLogger):
             layer: GNN layer index
             value: node representation tensor
         """
-        blob, shape = pack_tensor(value)
+        data, shape = pack_tensor(value)
         msg = DataExchangeMessage.for_message_passing(
             sender_name=self.node_name,
             layer=layer,
             round_id=self.round_counter,
-            data=blob,
+            data=data,
             shape=shape,
         )
 
