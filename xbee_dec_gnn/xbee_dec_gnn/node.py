@@ -104,13 +104,13 @@ class Node(ObjectWithLogger):
                 topic=Topic.POOLING,
             )
 
-        self.get_logger().info("Initialized publishers for %d neighbors", len(self.mp_pubs))
+        self.get_logger().info(f"Initialized publishers for {len(self.mp_pubs)} neighbors")
 
 
     def _handle_graph(self, msg: GraphMessage):
         """Handle GRAPH message with topology and features."""
         # Use provided node_id, fallback to self.node_id
-        self.get_logger().info("Graph received: id=%s neighbors=%s", self.node_id, msg.neighbors)
+        self.get_logger().info(f"Graph received: id={self.node_id} neighbors={msg.neighbors}")
 
         self.local_subgraph = nx.Graph()
         self.local_subgraph.add_node(self.node_id)
@@ -141,12 +141,8 @@ class Node(ObjectWithLogger):
         self.received_mp[(r, layer)][sender] = tensor_data
 
         self.get_logger().debug(
-            "RX: MP stored from node %s (r=%s, layer=%s) now %d/%d",
-            sender,
-            r,
-            layer,
-            len(self.received_mp[(r, layer)]),
-            len(self.active_neighbors),
+            f"RX: MP stored from node {sender} (r={r}, layer={layer}) "
+            f"now {len(self.received_mp[(r, layer)])}/{len(self.active_neighbors)}"
         )
 
     def _handle_pooling(self, msg: DataExchangeMessage):
@@ -171,7 +167,9 @@ class Node(ObjectWithLogger):
 
     def start(self):
         self.zigbee.start()
-        self.get_logger().info("XBee receive timeout: %s seconds", self.zigbee.device.get_sync_ops_timeout())
+        self.get_logger().info(
+            f"XBee receive timeout: {self.zigbee.device.get_sync_ops_timeout()} seconds"
+        )
         self.get_logger().info(f"Port: {self.zigbee.port} @ {self.zigbee.baud_rate}")
         self.get_logger().info(f"XBee addr64: {self.zigbee.device.get_64bit_addr()}")
 
@@ -182,7 +180,9 @@ class Node(ObjectWithLogger):
         # Get assigned node ID and update node name
         self.node_id = self.zigbee.get_node_id()
         self.node_name = self.node_prefix + str(self.node_id)
-        self.get_logger().info("Handshake complete: node_id=%s, node_name=%s", self.node_id, self.node_name)
+        self.get_logger().info(
+            f"Handshake complete: node_id={self.node_id}, node_name={self.node_name}"
+        )
 
         # Initialize publishers to neighbors
         self._init_neighbor_publishers()
@@ -210,7 +210,7 @@ class Node(ObjectWithLogger):
         ready = len(self.active_neighbors) > 0
 
         if ready:
-            self.get_logger().debug("Neighbors: %s", self.active_neighbors)
+            self.get_logger().debug(f"Neighbors: {self.active_neighbors}")
         return ready
 
     def get_initial_features(self):
@@ -233,7 +233,10 @@ class Node(ObjectWithLogger):
             while len(self.received_mp[key]) < len(self.active_neighbors):
                 if time.time() - wait_time_start > 30:  # 30 seconds timeout
                     raise TimeoutError("Timeout waiting for message passing messages.")
-                # self.get_logger().debug("Waiting for MP layer %d: %d/%d received", layer, len(self.received_mp[layer]), len(self.active_neighbors))
+                # self.get_logger().debug(
+                #     f"Waiting for MP layer {layer}: "
+                #     f"{len(self.received_mp[layer])}/{len(self.active_neighbors)} received"
+                # )
                 time.sleep(0.1)
 
             # Update the node's representation using the GNN layer.
@@ -243,11 +246,13 @@ class Node(ObjectWithLogger):
             inference_time += time.perf_counter() - inference_start
             del self.received_mp[key]
 
-            self.get_logger().debug("MP layer %d complete", layer)
+            self.get_logger().debug(f"MP layer {layer} complete")
 
         self.stats["inference_time"].append(inference_time)
         self.stats["message_passing_time"].append(time.perf_counter() - mp_start)
-        self.get_logger().info("  Message passing complete (%.2fs)", time.perf_counter() - mp_start)
+        self.get_logger().info(
+            f"  Message passing complete ({time.perf_counter() - mp_start:.2f}s)"
+        )
 
         return node_value
 
@@ -275,13 +280,17 @@ class Node(ObjectWithLogger):
             )
             del self.received_pooling[iteration]
 
-            self.get_logger().debug("Pooling iteration %d complete (error=%.6f)", iteration, error)
+            self.get_logger().debug(
+                f"Pooling iteration {iteration} complete (error={error:.6f})"
+            )
 
         if final_value is None:
             raise RuntimeError("Pooling did not converge.")
 
         self.stats["pooling_time"].append(time.perf_counter() - pooling_start)
-        self.get_logger().info("  Pooling complete (%.2fs)", time.perf_counter() - pooling_start)
+        self.get_logger().info(
+            f"  Pooling complete ({time.perf_counter() - pooling_start:.2f}s)"
+        )
         return final_value
 
     def run_prediction(self, graph_value: torch.Tensor):
@@ -348,7 +357,7 @@ class Node(ObjectWithLogger):
 
         self.round_counter += 1
         self.get_logger().info("─" * 40)
-        self.get_logger().info("ROUND %d", self.round_counter)
+        self.get_logger().info(f"ROUND {self.round_counter}")
         round_start = time.perf_counter()
 
         initial_features = self.get_initial_features()
@@ -361,12 +370,14 @@ class Node(ObjectWithLogger):
             graph_value = self.run_prediction(graph_value)
             graph_value = graph_value.item()
         except TimeoutError as e:
-            self.get_logger().warning("Timeout: %s", e)
+            self.get_logger().warning(f"Timeout: {e}")
             return
 
         elapsed = time.perf_counter() - round_start
         self.stats["round_time"].append(elapsed)
-        self.get_logger().info("ROUND %d DONE: value=%.4f (%.2fs)", self.round_counter, graph_value, elapsed)
+        self.get_logger().info(
+            f"ROUND {self.round_counter} DONE: value={graph_value:.4f} ({elapsed:.2f}s)"
+        )
 
         if graph_value < 0.5:
             mids = "not "
@@ -385,7 +396,7 @@ class Node(ObjectWithLogger):
                 key,
                 [f"{np.mean(values):.4f}", f"{np.std(values):.4f}", f"{np.max(values):.4f}", f"{np.min(values):.4f}"],
             )
-        self.get_logger().info("\n%s", table)
+        self.get_logger().info(f"\n{table}")
 
     def stop(self):
         self.zigbee.device.close()

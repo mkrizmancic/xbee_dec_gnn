@@ -115,17 +115,13 @@ class GraphGenerator(ObjectWithLogger):
 
             payload_bytes = len(msg.to_bytes())
             self.get_logger().debug(
-                "GRAPH payload size -> node_name=%s bytes=%d (features=%d, neighbors=%d)",
-                node_name,
-                payload_bytes,
-                len(x_list),
-                len(neighbors),
+                f"GRAPH payload size -> node_name={node_name} bytes={payload_bytes} "
+                f"(features={len(x_list)}, neighbors={len(neighbors)})"
             )
             if payload_bytes > 255:
                 self.get_logger().warning(
-                    "GRAPH payload for node_name=%s is %d bytes (>255). Reduce feature_dim or pruning.",
-                    node_name,
-                    payload_bytes,
+                    f"GRAPH payload for node_name={node_name} is {payload_bytes} bytes (>255). "
+                    "Reduce feature_dim or pruning."
                 )
 
             self.zigbee.send_to_node(node_name, msg, add_random_delay=False)
@@ -283,7 +279,10 @@ def main(args):
             try:
                 matplotlib.use('Qt5Agg')
             except ImportError:
-                logging.getLogger("central").warning("No interactive matplotlib backend available (install python3-tk or pyqt5). Falling back to non-GUI.")
+                logging.getLogger("central").warning(
+                    "No interactive matplotlib backend available (install python3-tk or pyqt5). "
+                    "Falling back to non-GUI."
+                )
                 args.gui = False
                 matplotlib.use('Agg')
     else:
@@ -323,9 +322,9 @@ def main(args):
             if hasattr(graph_generator, "zigbee") and graph_generator.zigbee is not None:
                 if graph_generator.zigbee.device.is_open():
                     graph_generator.zigbee.device.close()
-                    logging.getLogger("central").info("Central XBee device closed.")
+                        logging.getLogger("central").info("Central XBee device closed.")
         except Exception as e:
-            logging.getLogger("central").warning("Failed to close XBee device: %s", e)
+                    logging.getLogger("central").warning(f"Failed to close XBee device: {e}")
 
         # --- Plot handling ---
         # IMPORTANT: do NOT plt.close("all") if you want to show the final figure.

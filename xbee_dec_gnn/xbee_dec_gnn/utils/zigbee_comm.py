@@ -229,19 +229,23 @@ class XBeePublisher:
                 self.device.send_data_64_16(self.target_addr, XBee16BitAddress.UNKNOWN_ADDRESS, data)
                 ok = True
                 if attempt == 1:
-                    self.logger.debug("TX: %s -> %s", msg.summary(), self.target_name)
+                    self.logger.debug(f"TX: {msg.summary()} -> {self.target_name}")
                 else:
-                    self.logger.debug("TX: %s -> %s (retry %d)", msg.summary(), self.target_name, attempt)
+                    self.logger.debug(
+                        f"TX: {msg.summary()} -> {self.target_name} (retry {attempt})"
+                    )
                 break
             except (TransmitException, TimeoutException) as exc:
                 status = getattr(exc, "transmit_status", None) or getattr(exc, "status", None)
-                self.logger.warning("TX fail: %s (attempt %d, %s)", msg.summary(), attempt, status)
+                self.logger.warning(
+                    f"TX fail: {msg.summary()} (attempt {attempt}, {status})"
+                )
                 if attempt < 4:
                     time.sleep(backoff_delay)
                     backoff_delay *= 2
 
         if not ok:
-            self.logger.error("TX gave up: %s to %s", msg.summary(), self.target_name)
+            self.logger.error(f"TX gave up: {msg.summary()} to {self.target_name}")
 
         time.sleep(0.05)
 
@@ -262,7 +266,7 @@ class ZigbeeInterfaceBase:
         if not isinstance(topic, Topic):
             raise TypeError(f"topic must be a Topic enum, got {type(topic)}")
         self._handlers[topic] = callback
-        self.logger.debug("Registered handler for %s", topic.name)
+        self.logger.debug(f"Registered handler for {topic.name}")
 
     def start(self):
         self.device.open()
@@ -273,7 +277,7 @@ class ZigbeeInterfaceBase:
         try:
             return decode_message(payload)
         except Exception as exc:
-            self.logger.warning("Failed to decode message: %s", exc)
+            self.logger.warning(f"Failed to decode message: {exc}")
             return None
 
     def _data_receive_callback(self, xbee_message):
@@ -283,13 +287,15 @@ class ZigbeeInterfaceBase:
 
         handler = self._handlers.get(msg.topic)
         if handler is None:
-            self.logger.warning("No handler registered for topic: %s", msg.topic.name)
+            self.logger.warning(f"No handler registered for topic: {msg.topic.name}")
             return
 
         try:
             self._invoke_handler(handler, msg, xbee_message)
         except Exception as exc:
-            self.logger.error("Error in handler for %s: %s", msg.topic.name, exc, exc_info=True)
+            self.logger.error(
+                f"Error in handler for {msg.topic.name}: {exc}", exc_info=True
+            )
 
     def _handler_param_count(self, handler):
         try:
@@ -336,7 +342,7 @@ class ZigbeeInterface(ZigbeeInterfaceBase):
         self.node_id = _coerce_node_id(node_id if node_id is not None else node_name)
         self.id_to_addr = {}
         self.central_addr = None
-        self._handshake_complete = False
+        self.df = False
         self._handshake_lock = threading.Lock()
         self._handshake_event = threading.Event()
 
@@ -358,9 +364,7 @@ class ZigbeeInterface(ZigbeeInterfaceBase):
             self.addr_map = msg.addr_map
 
             self.logger.info(
-                "Handshake: Assigned node_id=%s, received %d peer addresses",
-                self.node_id,
-                len(self.addr_map),
+                f"Handshake: Assigned node_id={self.node_id}, received {len(self.addr_map)} peer addresses"
             )
 
             response = HandshakeMessage(step=HandshakeStep.CONFIRM, node_id=self.node_id)
@@ -394,9 +398,9 @@ class ZigbeeInterface(ZigbeeInterfaceBase):
         success = self._handshake_event.wait(timeout=timeout)
 
         if success:
-            self.logger.info("Handshake complete: node_id=%s", self.node_id)
+            self.logger.info(f"Handshake complete: node_id={self.node_id}")
         else:
-            self.logger.error("Handshake timeout after %.1fs", timeout)
+            self.logger.error(f"Handshake timeout after {timeout:.1f}s")
 
         return success
 
@@ -458,12 +462,16 @@ class ZigbeeServerInterface(ZigbeeInterfaceBase):
                 sender_64 = xbee_message.remote_device.get_64bit_addr()
 
             if sender_64 is None:
-                self.logger.warning("NODE_REGISTER missing sender address for node_name=%s", msg.node_name)
+                self.logger.warning(
+                    f"NODE_REGISTER missing sender address for node_name={msg.node_name}"
+                )
                 return
 
             self.addr_map[msg.node_name] = str(sender_64)
 
-            self.logger.info("RX: NODE_REGISTER from msg.node_name=%s mac=%s", msg.node_name, sender_64)
+            self.logger.info(
+                f"RX: NODE_REGISTER from node_name={msg.node_name} mac={sender_64}"
+            )
 
             self._received_register.add(msg.node_name)
             if len(self._received_register) >= self.num_nodes:
@@ -474,7 +482,7 @@ class ZigbeeServerInterface(ZigbeeInterfaceBase):
             node_name = _coerce_node_id(msg.node_name)
             self._received_confirm.add(node_name)
 
-            self.logger.info("RX: ID_CONFIRM from node_name=%s", node_name)
+            self.logger.info(f"RX: ID_CONFIRM from node_name={node_name}")
 
             if len(self._received_confirm) >= self.num_nodes:
                 self._confirm_event.set()
@@ -482,8 +490,8 @@ class ZigbeeServerInterface(ZigbeeInterfaceBase):
     def run_handshake(self):
         my_addr = str(self.device.get_64bit_addr())
 
-        self.logger.info("Central online: port=%s baud=%s", self.port, self.baud_rate)
-        self.logger.info("Central XBee 64-bit addr: %s", my_addr)
+        self.logger.info(f"Central online: port={self.port} baud={self.baud_rate}")
+        self.logger.info(f"Central XBee 64-bit addr: {my_addr}")
         self.logger.info("Handshake: broadcasting DISCOVERY; waiting for INIT from nodes")
 
         msg = HandshakeMessage(step=HandshakeStep.DISCOVERY, addr=my_addr)
@@ -501,10 +509,10 @@ class ZigbeeServerInterface(ZigbeeInterfaceBase):
 
             try:
                 self.device.send_data_64_16(self.BCAST_64, self.BCAST_16, data)
-                self.logger.debug("TX: DISCOVERY broadcast (central_mac=%s)", my_addr)
+                self.logger.debug(f"TX: DISCOVERY broadcast (central_mac={my_addr})")
             except TransmitException as exc:
                 status = getattr(exc, "transmit_status", None) or getattr(exc, "status", None)
-                self.logger.warning("TX: DISCOVERY broadcast failed (status=%s)", status)
+                self.logger.warning(f"TX: DISCOVERY broadcast failed (status={status})")
 
             self._reg_event.wait(timeout=interval_s)
 
@@ -539,7 +547,7 @@ class ZigbeeServerInterface(ZigbeeInterfaceBase):
         for node_id, addr in self.addr_map.items():
             if addr is None:
                 self.logger.warning(
-                    "Handshake: addr for node_id=%s is None; skipping publisher creation", node_id
+                    f"Handshake: addr for node_id={node_id} is None; skipping publisher creation"
                 )
                 continue
 
@@ -552,7 +560,7 @@ class ZigbeeServerInterface(ZigbeeInterfaceBase):
 
     def send_to_node(self, node_name, msg: MessageBase, add_random_delay=False):
         if node_name not in self.addr_map:
-            self.logger.error("No address for node_name=%s", node_name)
+            self.logger.error(f"No address for node_name={node_name}")
             return False
 
         key = (node_name, msg.topic)
