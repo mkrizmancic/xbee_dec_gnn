@@ -26,9 +26,8 @@ class HandshakeStep(Enum):
 
 
 class MessageBase:
-    def __init__(self, topic: Topic, kind: int = 0):
-        self.topic = topic
-        self.kind = kind
+    def __init__(self, topic: Topic):
+        self.topic = topic  # TODO: remove topic
 
     def to_payload(self) -> dict:
         return {}
@@ -41,47 +40,47 @@ class MessageBase:
         if topic != self.topic:
             raise ValueError(f"Topic mismatch: message={self.topic} publisher={topic}")
         payload = pickle.dumps(self.to_payload(), protocol=5)
-        return bytes([topic.value, self.kind]) + payload
+        return bytes([topic.value]) + payload
 
 
 class HandshakeMessage(MessageBase):
     def __init__(
         self,
         step: HandshakeStep,
-        node_name: str | None = None,
+        sender_name: str | None = None,
+        sender_addr: str | None = None,
         addr_map: dict | None = None,
-        addr: str | None = None,
     ):
-        super().__init__(Topic.HANDSHAKE, step.value)
+        super().__init__(Topic.HANDSHAKE)
         self.step = step
-        self.node_name = node_name
+        self.sender_name = sender_name
+        self.sender_addr = sender_addr
         self.addr_map = addr_map
-        self.addr = addr
 
     def to_payload(self) -> dict:
         return {
-            "node_name": self.node_name,
+            "step": self.step.value,
+            "sender_name": self.sender_name,
+            "sender_addr": self.sender_addr,
             "addr_map": self.addr_map,
-            "addr": self.addr,
         }
 
     def summary(self) -> str:
         return f"HANDSHAKE:{self.step.name}"
 
     @classmethod
-    def from_payload(cls, kind: int, payload: dict) -> "HandshakeMessage":
-        step = HandshakeStep(kind)
+    def from_payload(cls, payload: dict) -> "HandshakeMessage":
         return cls(
-            step=step,
-            node_name=payload.get("node_name"),
-            addr_map=payload.get("addr_map"),
-            addr=payload.get("addr"),
+            step=HandshakeStep(payload["step"]),
+            sender_name=payload["sender_name"],
+            sender_addr=payload["sender_addr"],
+            addr_map=payload["addr_map"],
         )
 
 
 class GraphMessage(MessageBase):
     def __init__(self, neighbors: list[str], features: list[float]):
-        super().__init__(Topic.GRAPH, 0)
+        super().__init__(Topic.GRAPH)
         self.neighbors = neighbors
         self.features = features
 
@@ -113,7 +112,7 @@ class DataExchangeMessage(MessageBase):
     ):
         if topic not in (Topic.MP, Topic.POOLING):
             raise ValueError("DataExchangeMessage requires topic MP or POOLING")
-        super().__init__(topic, 0)
+        super().__init__(topic)
         self.sender_name = sender_name
         self.layer = layer
         self.round_id = round_id
@@ -173,7 +172,7 @@ class DataExchangeMessage(MessageBase):
     def from_payload(cls, topic: Topic, payload: dict) -> "DataExchangeMessage":
         return cls(
             topic=topic,
-            sender_id=_coerce_node_id(payload.get("sender_id")),
+            sender_name=payload["sender_name"],
             layer=payload.get("layer"),
             round_id=payload.get("round_id"),
             iteration=payload.get("iteration"),
@@ -184,17 +183,16 @@ class DataExchangeMessage(MessageBase):
 
 
 def decode_message(data: bytes) -> MessageBase:
-    if len(data) < 2:
+    if not data:
         raise ValueError("Message payload too short")
 
     topic = Topic(data[0])
-    kind = data[1]
     payload = {}
-    if len(data) > 2:
-        payload = pickle.loads(data[2:])
+    if len(data) > 1:
+        payload = pickle.loads(data[1:])
 
     if topic == Topic.HANDSHAKE:
-        return HandshakeMessage.from_payload(kind, payload)
+        return HandshakeMessage.from_payload(payload)
     if topic == Topic.GRAPH:
         return GraphMessage.from_payload(payload)
     if topic in (Topic.MP, Topic.POOLING):
@@ -332,15 +330,14 @@ def _coerce_node_id(value):
         return value
 
 
-class ZigbeeInterface(ZigbeeInterfaceBase):
-    def __init__(self, port, baud_rate, node_name, num_nodes, node_id=None, logger=None):
+class ZigbeeNodeInterface(ZigbeeInterfaceBase):
+    def __init__(self, port, baud_rate, node_name, num_nodes, logger=None):
         super().__init__(port, baud_rate, logger=logger)
 
         self.node_name = node_name
         self.num_nodes = num_nodes
 
-        self.node_id = _coerce_node_id(node_id if node_id is not None else node_name)
-        self.id_to_addr = {}
+        self.addr_map = {}
         self.central_addr = None
         self.df = False
         self._handshake_lock = threading.Lock()
@@ -350,12 +347,13 @@ class ZigbeeInterface(ZigbeeInterfaceBase):
 
     def _handle_handshake(self, msg: HandshakeMessage):
         if msg.step == HandshakeStep.DISCOVERY:
-            self.central_addr = msg.addr
+            self.central_addr = msg.sender_addr
             self.logger.info("Handshake: DISCOVERY received from central server")
 
             response = HandshakeMessage(
                 step=HandshakeStep.REGISTER,
-                node_name=self.node_name,
+                sender_name=self.node_name,
+                sender_addr=str(self.device.get_64bit_addr()),
             )
             self._send_handshake_message(response)
             return
@@ -363,11 +361,13 @@ class ZigbeeInterface(ZigbeeInterfaceBase):
         if msg.step == HandshakeStep.ACK:
             self.addr_map = msg.addr_map
 
-            self.logger.info(
-                f"Handshake: Assigned node_id={self.node_id}, received {len(self.addr_map)} peer addresses"
-            )
+            if not self.addr_map:
+                self.logger.error("Handshake: received empty addr_map in ACK")
+                return
 
-            response = HandshakeMessage(step=HandshakeStep.CONFIRM, node_id=self.node_id)
+            self.logger.info(f"Handshake: Received {len(self.addr_map)} peer addresses")
+
+            response = HandshakeMessage(step=HandshakeStep.CONFIRM, sender_name=self.node_name)
             self._send_handshake_message(response)
 
             with self._handshake_lock:
@@ -390,35 +390,32 @@ class ZigbeeInterface(ZigbeeInterfaceBase):
         )
         handshake_pub.publish(msg, add_random_delay=False)
 
-    def get_node_id(self):
-        return self.node_id
-
     def wait_for_handshake(self, timeout=30.0):
         self.logger.info("Waiting for handshake to complete...")
         success = self._handshake_event.wait(timeout=timeout)
 
         if success:
-            self.logger.info(f"Handshake complete: node_id={self.node_id}")
+                self.logger.info(f"Handshake complete: node_name={self.node_name}")
         else:
             self.logger.error(f"Handshake timeout after {timeout:.1f}s")
 
         return success
 
-    def create_publisher(self, target_node_id, topic: Topic, logger=None):
-        if target_node_id not in self.id_to_addr:
-            raise ValueError(f"Unknown target node ID: {target_node_id}. Handshake may not be complete.")
+    def create_publisher(self, target_name, topic: Topic, logger=None):
+        if target_name not in self.addr_map:
+            raise ValueError(f"Unknown target node ID: {target_name}. Handshake may not be complete.")
 
-        target_addr = self.id_to_addr[target_node_id]
+        target_addr = self.addr_map[target_name]
 
         return self._create_publisher_for_addr(
             target_addr=target_addr,
-            target_name=target_node_id,
+            target_name=target_name,
             topic=topic,
             logger=logger,
         )
 
 
-class ZigbeeServerInterface(ZigbeeInterfaceBase):
+class ZigbeeCentralInterface(ZigbeeInterfaceBase):
     BCAST_64 = XBee64BitAddress.from_hex_string("000000000000FFFF")
     BCAST_16 = XBee16BitAddress.from_hex_string("FFFE")
 
@@ -454,35 +451,23 @@ class ZigbeeServerInterface(ZigbeeInterfaceBase):
         self._next_auto_id += 1
         return assigned
 
-    def _handle_handshake(self, msg: HandshakeMessage, xbee_message):
+    def _handle_handshake(self, msg: HandshakeMessage):
         if msg.step == HandshakeStep.REGISTER:
-
-            sender_64 = None
-            if xbee_message is not None and xbee_message.remote_device is not None:
-                sender_64 = xbee_message.remote_device.get_64bit_addr()
-
-            if sender_64 is None:
-                self.logger.warning(
-                    f"NODE_REGISTER missing sender address for node_name={msg.node_name}"
-                )
-                return
-
-            self.addr_map[msg.node_name] = str(sender_64)
+            self.addr_map[msg.sender_name] = str(msg.sender_addr)
 
             self.logger.info(
-                f"RX: NODE_REGISTER from node_name={msg.node_name} mac={sender_64}"
+                f"RX: NODE_REGISTER from {msg.sender_name} [{msg.sender_addr}]"
             )
 
-            self._received_register.add(msg.node_name)
+            self._received_register.add(msg.sender_name)
             if len(self._received_register) >= self.num_nodes:
                 self._reg_event.set()
             return
 
         if msg.step == HandshakeStep.CONFIRM:
-            node_name = _coerce_node_id(msg.node_name)
-            self._received_confirm.add(node_name)
+            self._received_confirm.add(msg.sender_name)
 
-            self.logger.info(f"RX: ID_CONFIRM from node_name={node_name}")
+            self.logger.info(f"RX: ID_CONFIRM from {msg.sender_name}")
 
             if len(self._received_confirm) >= self.num_nodes:
                 self._confirm_event.set()
@@ -494,8 +479,7 @@ class ZigbeeServerInterface(ZigbeeInterfaceBase):
         self.logger.info(f"Central XBee 64-bit addr: {my_addr}")
         self.logger.info("Handshake: broadcasting DISCOVERY; waiting for INIT from nodes")
 
-        msg = HandshakeMessage(step=HandshakeStep.DISCOVERY, addr=my_addr)
-        data = msg.to_bytes()
+        msg = HandshakeMessage(step=HandshakeStep.DISCOVERY, sender_addr=my_addr)
         interval_s = 1.0
         start_time = time.time()
 
@@ -508,7 +492,7 @@ class ZigbeeServerInterface(ZigbeeInterfaceBase):
                     )
 
             try:
-                self.device.send_data_64_16(self.BCAST_64, self.BCAST_16, data)
+                self.send_broadcast(msg)
                 self.logger.debug(f"TX: DISCOVERY broadcast (central_mac={my_addr})")
             except TransmitException as exc:
                 status = getattr(exc, "transmit_status", None) or getattr(exc, "status", None)
@@ -525,7 +509,6 @@ class ZigbeeServerInterface(ZigbeeInterfaceBase):
         for node_name in self.addr_map.keys():
             msg = HandshakeMessage(
                 step=HandshakeStep.ACK,
-                node_name=node_name,
                 addr_map=self.addr_map,
             )
             handshake_publishers[node_name].publish(msg, add_random_delay=False)
@@ -574,3 +557,8 @@ class ZigbeeServerInterface(ZigbeeInterfaceBase):
             self._publisher_cache[key] = publisher
 
         return publisher.publish(msg, add_random_delay=add_random_delay)
+
+    def send_broadcast(self, msg: MessageBase):
+        data = msg.to_bytes()
+        self.device.send_data_64_16(self.BCAST_64, self.BCAST_16, data)
+

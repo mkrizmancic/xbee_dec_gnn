@@ -80,7 +80,7 @@ windows:
           <%- if args[0] == "remote" %>
           ssh -o StrictHostKeyChecking=no -t pi@rpi4.local 'docker start -i xbee_gnn_cont'
           <%- end %>
-          cd ~/other_ws/xbee_dec_gnn/xbee_dec_gnn
+          cd ~/other_ws/xbee_dec_gnn/xbee_dec_gnn/xbee_dec_gnn
           python3 node.py
   - central:
       panes:

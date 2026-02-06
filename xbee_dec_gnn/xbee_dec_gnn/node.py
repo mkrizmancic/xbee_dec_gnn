@@ -18,7 +18,7 @@ from xbee_dec_gnn.utils.zigbee_comm import (
     DataExchangeMessage,
     GraphMessage,
     Topic,
-    ZigbeeInterface,
+    ZigbeeNodeInterface,
 )
 
 
@@ -64,7 +64,7 @@ class Node(ObjectWithLogger):
         # Initialize the LED matrix if available.
         self.led = LEDMatrix()
 
-        self.zigbee = ZigbeeInterface(
+        self.zigbee = ZigbeeNodeInterface(
             params.port,
             params.baud,
             self.node_name,

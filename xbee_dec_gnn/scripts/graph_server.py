@@ -14,7 +14,7 @@ from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.widgets import Button
 from torch_geometric.data import InMemoryDataset
 from xbee_dec_gnn.utils import ObjectWithLogger
-from xbee_dec_gnn.utils.zigbee_comm import GraphMessage, ZigbeeServerInterface
+from xbee_dec_gnn.utils.zigbee_comm import GraphMessage, ZigbeeCentralInterface
 
 
 class GraphGenerator(ObjectWithLogger):
@@ -62,7 +62,7 @@ class GraphGenerator(ObjectWithLogger):
         self.prev_image = None
         self.ax_range = None
 
-        self.zigbee = ZigbeeServerInterface(
+        self.zigbee = ZigbeeCentralInterface(
             port=port,
             baud_rate=baud_rate,
             num_nodes=self.num_nodes,
@@ -322,7 +322,7 @@ def main(args):
             if hasattr(graph_generator, "zigbee") and graph_generator.zigbee is not None:
                 if graph_generator.zigbee.device.is_open():
                     graph_generator.zigbee.device.close()
-                        logging.getLogger("central").info("Central XBee device closed.")
+                    logging.getLogger("central").info("Central XBee device closed.")
         except Exception as e:
                     logging.getLogger("central").warning(f"Failed to close XBee device: {e}")
 
