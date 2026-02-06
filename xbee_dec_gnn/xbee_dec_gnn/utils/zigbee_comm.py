@@ -249,9 +249,10 @@ class XBeePublisher:
 
 
 class ZigbeeInterfaceBase:
-    def __init__(self, port, baud_rate, logger=None):
+    def __init__(self, port, baud_rate, sync_ops_timeout=4.0, logger=None):
         self.port = port
         self.baud_rate = baud_rate
+        self.sync_ops_timeout = sync_ops_timeout
         self.network = None
         self.logger = logger or logging.getLogger(__name__)
 
@@ -266,8 +267,13 @@ class ZigbeeInterfaceBase:
 
     def start(self):
         self.device.open()
+        self.device.set_sync_ops_timeout(self.sync_ops_timeout)
+
+        self.logger.info(f"Port: {self.port} @ {self.baud_rate}")
+        self.logger.info(f"Addr64: {self.device.get_64bit_addr()}")
+        self.logger.info(f"Sync. ops. timeout: {self.device.get_sync_ops_timeout()} seconds")
         self.device.add_data_received_callback(self._data_receive_callback)
-        self.network = self.device.get_network()
+        # self.network = self.device.get_network()
 
     def _decode_message(self, payload: bytes) -> MessageBase | None:
         try:
@@ -329,8 +335,8 @@ def _coerce_node_id(value):
 
 
 class ZigbeeNodeInterface(ZigbeeInterfaceBase):
-    def __init__(self, port, baud_rate, node_name, num_nodes, logger=None):
-        super().__init__(port, baud_rate, logger=logger)
+    def __init__(self, port, baud_rate, node_name, num_nodes, sync_ops_timeout=1.0, logger=None):
+        super().__init__(port, baud_rate, sync_ops_timeout, logger)
 
         self.node_name = node_name
         self.num_nodes = num_nodes
@@ -393,7 +399,7 @@ class ZigbeeNodeInterface(ZigbeeInterfaceBase):
         if success:
                 self.logger.info("Handshake complete. Ready for communication.")
         else:
-            self.logger.error(f"Handshake timeout after {timeout:.1f}s")
+            self.logger.critical(f"Handshake timeout after {timeout:.1f}s")
 
         return success
 
@@ -420,13 +426,15 @@ class ZigbeeCentralInterface(ZigbeeInterfaceBase):
         port,
         baud_rate,
         num_nodes,
-        wait_forever=True,
-        init_timeout_s=30.0,
+        init_timeout=None,
+        sync_ops_timeout=4.0,
         logger=None,
     ):
-        super().__init__(port, baud_rate, logger=logger)
+        super().__init__(port, baud_rate, sync_ops_timeout, logger)
 
+        self.init_timeout = init_timeout
         self.num_nodes = num_nodes
+
         self.addr_map = {}
         self._publisher_cache = {}
 
@@ -434,18 +442,8 @@ class ZigbeeCentralInterface(ZigbeeInterfaceBase):
         self._received_confirm = set()
         self._reg_event = threading.Event()
         self._confirm_event = threading.Event()
-        self.wait_forever = wait_forever
-        self.init_timeout_s = init_timeout_s
-        self._next_auto_id = 0
 
         self.register_handler(Topic.HANDSHAKE, self._handle_handshake)
-
-    def _assign_node_id(self):
-        while self._next_auto_id in self.addr_map:
-            self._next_auto_id += 1
-        assigned = self._next_auto_id
-        self._next_auto_id += 1
-        return assigned
 
     def _handle_handshake(self, msg: HandshakeMessage):
         if msg.step == HandshakeStep.REGISTER:
@@ -480,9 +478,9 @@ class ZigbeeCentralInterface(ZigbeeInterfaceBase):
         start_time = time.time()
 
         while not self._reg_event.is_set():
-            if not self.wait_forever:
+            if self.init_timeout is not None:
                 elapsed = time.time() - start_time
-                if elapsed >= self.init_timeout_s:
+                if elapsed >= self.init_timeout:
                     raise TimeoutError(
                         f"[CENTRAL] Only received {len(self._received_register)}/{self.num_nodes} INITs"
                     )
@@ -510,10 +508,10 @@ class ZigbeeCentralInterface(ZigbeeInterfaceBase):
             handshake_publishers[node_name].publish(msg, add_random_delay=False)
 
         if not self._confirm_event.is_set():
-            if self.wait_forever:
+            if self.init_timeout is None:
                 self._confirm_event.wait()
             else:
-                self._confirm_event.wait(timeout=self.init_timeout_s)
+                self._confirm_event.wait(timeout=self.init_timeout)
                 if not self._confirm_event.is_set():
                     raise TimeoutError(
                         f"[CENTRAL] Only received {len(self._received_confirm)}/{self.num_nodes} ID_CONFIRM"

@@ -235,7 +235,7 @@ def test():
             adj_list[i].append(j)
 
     # Initialize node features for each decentralized model
-    node_features = [data.x[i].unsqueeze(0) for i in range(num_nodes)]
+    node_features = [data.x[i].unsqueeze(0) for i in range(num_nodes)]  # type: ignore
 
     # Step 1: Run GNN layers with decentralized message passing
     for layer in range(model.gnn.num_layers):

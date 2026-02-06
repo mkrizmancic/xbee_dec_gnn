@@ -35,13 +35,10 @@ class Node(ObjectWithLogger):
         except (TypeError, ValueError):
             pass
         self.node_name = self.node_prefix + str(self.node_id)
-        self.id_to_addr = None
-        self.data = None
+        self.starting_data = None
 
         self.get_logger().info(f"Node online: {self.node_name}")
 
-        self.value = torch.Tensor()  # The current representation of the node.
-        self.output = torch.Tensor()  # The interpretable output of the GNN after each layer.
         self.layer = 0  # The current layer of the GNN being processed.
         self.received_mp = defaultdict(dict)  # Message passing values received from neighbors, indexed by iteration
                                               # number. Also used for synchronization.
@@ -125,7 +122,7 @@ class Node(ObjectWithLogger):
         if x_tensor.ndim == 1:
             x_tensor = x_tensor.unsqueeze(0)
 
-        self.data = x_tensor
+        self.starting_data = x_tensor
         self.graph_lock.set()
 
     def _handle_mp(self, msg: DataExchangeMessage):
@@ -168,11 +165,6 @@ class Node(ObjectWithLogger):
 
     def start(self):
         self.zigbee.start()
-        self.get_logger().info(
-            f"XBee receive timeout: {self.zigbee.device.get_sync_ops_timeout()} seconds"
-        )
-        self.get_logger().info(f"Port: {self.zigbee.port} @ {self.zigbee.baud_rate}")
-        self.get_logger().info(f"XBee addr64: {self.zigbee.device.get_64bit_addr()}")
 
         # Wait for handshake to complete (handled internally by ZigbeeInterface)
         if not self.zigbee.wait_for_handshake(timeout=30.0):
@@ -192,7 +184,6 @@ class Node(ObjectWithLogger):
 
         # We know the whole graph in development mode.
         if self.local_subgraph.number_of_nodes() > 0:
-            # Use integer IDs directly to match id_to_addr keys
             self.active_neighbors = list(self.local_subgraph.neighbors(self.node_id))
 
         if not nx.is_connected(self.local_subgraph):
@@ -201,7 +192,7 @@ class Node(ObjectWithLogger):
                 "mismatch of communication radius used in this node and for the creation of the discovery messages."
             )
             raise RuntimeError("Local subgraph is not connected.")
-        ready = len(self.active_neighbors) > 0
+        ready = len(self.active_neighbors) > 0 and self.starting_data is not None
 
         if ready:
             self.get_logger().debug(f"Neighbors: {self.active_neighbors}")
@@ -209,8 +200,11 @@ class Node(ObjectWithLogger):
 
     def get_initial_features(self):
         # Compute the initial feature vector for this node (already received over XBee).
-        self.value = self.data
-        return self.value
+        if self.starting_data is None:
+            self.get_logger().error("Initial features not loaded! This should never happen if the graph message is properly received and processed.")
+            raise RuntimeError("Initial features not loaded.")
+
+        return self.starting_data
 
     def run_message_passing(self, initial_features: torch.Tensor):
         inference_time = 0.0
@@ -250,13 +244,13 @@ class Node(ObjectWithLogger):
 
         return node_value
 
-    def run_pooling(self, node_value: torch.Tensor) -> torch.Tensor:
+    def run_pooling(self, init_node_value: torch.Tensor) -> torch.Tensor:
         pooling_start = time.perf_counter()
 
         if self.decentralized_model.pooling is None:
-            return node_value
+            return init_node_value
 
-        node_value = self.decentralized_model.init_pooling(node_value)
+        node_value = self.decentralized_model.init_pooling(init_node_value)
         for iteration in range(self.num_nodes - 1 + self.decentralized_model.pooling.convergence_min):
             # Send the current node representation to neighbors.
             self.send_pooling(iteration, node_value)
@@ -355,8 +349,6 @@ class Node(ObjectWithLogger):
         round_start = time.perf_counter()
 
         initial_features = self.get_initial_features()
-
-        time.sleep(0.1)  # Small delay to ensure all nodes are ready
 
         try:
             node_value = self.run_message_passing(initial_features)

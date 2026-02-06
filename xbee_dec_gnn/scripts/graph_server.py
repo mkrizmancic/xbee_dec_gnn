@@ -9,10 +9,11 @@ import time
 import matplotlib
 import matplotlib.pyplot as plt
 import networkx as nx
+from torch import Tensor
 import torch_geometric.utils as tg_utils
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.widgets import Button
-from torch_geometric.data import InMemoryDataset
+from torch_geometric.data import Data, InMemoryDataset
 from xbee_dec_gnn.utils import ObjectWithLogger
 from xbee_dec_gnn.utils.zigbee_comm import GraphMessage, ZigbeeCentralInterface
 
@@ -34,9 +35,11 @@ class GraphGenerator(ObjectWithLogger):
         self.num_nodes = num_nodes
         self.node_prefix = "node_" # TODO
 
-        # Load graph dataset and select appropriate size range
+        # Load graph dataset and and check it has required attributes
         self.dataset = InMemoryDataset()
         self.dataset.load("/root/resources/data/MIDS_data.pt")
+
+        # Select appropriate size range
         dataset_range = {}
         curr_index = 0
         for size, num_graphs in zip(range(3, 9), [2, 6, 21, 112, 853, 11117]):
@@ -44,6 +47,7 @@ class GraphGenerator(ObjectWithLogger):
             curr_index += num_graphs
         self.dataset_range = dataset_range[self.num_nodes]
         self.current_graph_index = 0
+        self.data: Data = self.dataset[self.current_graph_index]  # type: ignore
 
         self.G = nx.cycle_graph(self.num_nodes)
         self.node_positions = {}
@@ -55,7 +59,7 @@ class GraphGenerator(ObjectWithLogger):
 
         # Create button for GUI mode
         if self.gui_mode:
-            self.button_ax = self.fig.add_axes([0.02, 0.02, 0.12, 0.05])
+            self.button_ax = self.fig.add_axes([0.02, 0.02, 0.12, 0.05])  # type: ignore
             self.next_button = Button(self.button_ax, 'Next')
             self.next_button.on_clicked(self.on_next_button_clicked)
 
@@ -66,8 +70,6 @@ class GraphGenerator(ObjectWithLogger):
             port=port,
             baud_rate=baud_rate,
             num_nodes=self.num_nodes,
-            wait_forever=True,
-            init_timeout_s=30.0,
             logger=self.get_logger(),
         )
 
@@ -98,7 +100,9 @@ class GraphGenerator(ObjectWithLogger):
         Designed to stay under XBee's ~255 byte payload; logs payload size so
         you can tune feature_dim.
         """
-        for node_name, addr in self.addr_map.items():
+        assert self.data is not None and self.data.x is not None, "Graph data or features not loaded."
+
+        for node_name in self.addr_map:
             idx = int(node_name.split("_")[-1])  # Assuming node_name format is "node_X" # TODO
 
             # Only use neighbors that are in our active node set
@@ -206,12 +210,15 @@ class GraphGenerator(ObjectWithLogger):
     def load_next_graph(self):
         """Load the next graph from the dataset."""
         self.current_graph_index = random.randint(self.dataset_range[0], self.dataset_range[1])
-        self.data = self.dataset[self.current_graph_index]
+        self.data = self.dataset[self.current_graph_index]  # type: ignore
         # Create graph based on positions and communication radius
         self.G = tg_utils.to_networkx(self.data, to_undirected=True)
 
     def publish_graph_image(self):
         """Draw/update the graph in the matplotlib window (no ROS publishing)."""
+
+        assert self.data is not None
+        assert self.data.x is not None and isinstance(self.data.y, Tensor)
 
         # Clear the previous plot and draw the updated graph
         self.ax.clear()
