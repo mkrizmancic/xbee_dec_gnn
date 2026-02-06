@@ -69,7 +69,6 @@ class Node(ObjectWithLogger):
             params.baud,
             self.node_name,
             self.num_nodes,
-            node_id=self.node_id,
             logger=self.get_logger(),
         )
         self.graph_lock = threading.Event()
@@ -89,22 +88,24 @@ class Node(ObjectWithLogger):
         Called after handshake is complete.
         """
         for neighbor_id in range(self.num_nodes):
-            if neighbor_id == self.node_id:
+            if neighbor_id == int(self.node_id):
                 continue  # Skip self
+
+            neighbor_name = f"{self.node_prefix}{neighbor_id}"
 
             # Create message passing publisher (ZigbeeInterface handles address resolution)
             self.mp_pubs[neighbor_id] = self.zigbee.create_publisher(
-                target_node_id=neighbor_id,
+                target_name=neighbor_name,
                 topic=Topic.MP,
             )
 
             # Create pooling publisher
             self.pooling_pubs[neighbor_id] = self.zigbee.create_publisher(
-                target_node_id=neighbor_id,
+                target_name=neighbor_name,
                 topic=Topic.POOLING,
             )
 
-        self.get_logger().info(f"Initialized publishers for {len(self.mp_pubs)} neighbors")
+        self.get_logger().info(f"Initialized publishers for {len(self.mp_pubs)} nodes.")
 
 
     def _handle_graph(self, msg: GraphMessage):
@@ -177,11 +178,7 @@ class Node(ObjectWithLogger):
         if not self.zigbee.wait_for_handshake(timeout=30.0):
             raise RuntimeError("Handshake failed or timed out")
 
-        # Get assigned node ID and update node name
-        self.node_id = self.zigbee.get_node_id()
-        self.node_name = self.node_prefix + str(self.node_id)
-        self.get_logger().info(
-            f"Handshake complete: node_id={self.node_id}, node_name={self.node_name}"
+        self.get_logger().info(f"Handshake complete: node_name={self.node_name}"
         )
 
         # Initialize publishers to neighbors

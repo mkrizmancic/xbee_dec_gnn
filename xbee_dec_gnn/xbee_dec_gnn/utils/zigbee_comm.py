@@ -402,7 +402,7 @@ class ZigbeeNodeInterface(ZigbeeInterfaceBase):
         return success
 
     def create_publisher(self, target_name, topic: Topic, logger=None):
-        if target_name not in self.addr_map:
+        if not self.addr_map or target_name not in self.addr_map:
             raise ValueError(f"Unknown target node ID: {target_name}. Handshake may not be complete.")
 
         target_addr = self.addr_map[target_name]
