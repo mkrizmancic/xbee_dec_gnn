@@ -26,21 +26,22 @@ class HandshakeStep(Enum):
 
 
 class MessageBase:
-    def __init__(self, topic: Topic):
-        self.topic = topic  # TODO: remove topic
+    def __init__(self):
+        self.size = None
+
+    def _summary(self) -> str:
+        return f" ({self.size} bytes)" if self.size is not None else ""
+
+    def summary(self) -> str:
+        return self._summary()
 
     def to_payload(self) -> dict:
         return {}
 
-    def summary(self) -> str:
-        return self.topic.name
-
-    def to_bytes(self, topic_override: Topic | None = None) -> bytes:
-        topic = topic_override or self.topic
-        if topic != self.topic:
-            raise ValueError(f"Topic mismatch: message={self.topic} publisher={topic}")
+    def to_bytes(self) -> bytes:
         payload = pickle.dumps(self.to_payload(), protocol=5)
-        return bytes([topic.value]) + payload
+        self.size = len(payload)
+        return payload
 
 
 class HandshakeMessage(MessageBase):
@@ -51,7 +52,7 @@ class HandshakeMessage(MessageBase):
         sender_addr: str | None = None,
         addr_map: dict | None = None,
     ):
-        super().__init__(Topic.HANDSHAKE)
+        super().__init__()
         self.step = step
         self.sender_name = sender_name
         self.sender_addr = sender_addr
@@ -66,7 +67,7 @@ class HandshakeMessage(MessageBase):
         }
 
     def summary(self) -> str:
-        return f"HANDSHAKE:{self.step.name}"
+        return f"HANDSHAKE:{self.step.name}" + self._summary()
 
     @classmethod
     def from_payload(cls, payload: dict) -> "HandshakeMessage":
@@ -80,7 +81,7 @@ class HandshakeMessage(MessageBase):
 
 class GraphMessage(MessageBase):
     def __init__(self, neighbors: list[str], features: list[float]):
-        super().__init__(Topic.GRAPH)
+        super().__init__()
         self.neighbors = neighbors
         self.features = features
 
@@ -101,7 +102,6 @@ class GraphMessage(MessageBase):
 class DataExchangeMessage(MessageBase):
     def __init__(
         self,
-        topic: Topic,
         sender_name: str,
         layer: int | None = None,
         round_id: int | None = None,
@@ -110,9 +110,7 @@ class DataExchangeMessage(MessageBase):
         shape: list[int] | None = None,
         sources: list | None = None,
     ):
-        if topic not in (Topic.MP, Topic.POOLING):
-            raise ValueError("DataExchangeMessage requires topic MP or POOLING")
-        super().__init__(topic)
+        super().__init__()
         self.sender_name = sender_name
         self.layer = layer
         self.round_id = round_id
@@ -134,7 +132,6 @@ class DataExchangeMessage(MessageBase):
         shape: list[int],
     ) -> "DataExchangeMessage":
         return cls(
-            topic=Topic.MP,
             sender_name=sender_name,
             layer=layer,
             round_id=round_id,
@@ -152,7 +149,6 @@ class DataExchangeMessage(MessageBase):
         sources: list | None = None,
     ) -> "DataExchangeMessage":
         return cls(
-            topic=Topic.POOLING,
             sender_name=sender_name,
             iteration=iteration,
             data=data,
@@ -172,9 +168,8 @@ class DataExchangeMessage(MessageBase):
         }
 
     @classmethod
-    def from_payload(cls, topic: Topic, payload: dict) -> "DataExchangeMessage":
+    def from_payload(cls, payload: dict) -> "DataExchangeMessage":
         return cls(
-            topic=topic,
             sender_name=payload["sender_name"],
             layer=payload.get("layer"),
             round_id=payload.get("round_id"),
@@ -185,7 +180,7 @@ class DataExchangeMessage(MessageBase):
         )
 
 
-def decode_message(data: bytes) -> MessageBase:
+def decode_message(data: bytes) -> tuple[Topic, MessageBase]:
     if not data:
         raise ValueError("Message payload too short")
 
@@ -195,13 +190,19 @@ def decode_message(data: bytes) -> MessageBase:
         payload = pickle.loads(data[1:])
 
     if topic == Topic.HANDSHAKE:
-        return HandshakeMessage.from_payload(payload)
+        return topic, HandshakeMessage.from_payload(payload)
     if topic == Topic.GRAPH:
-        return GraphMessage.from_payload(payload)
+        return topic, GraphMessage.from_payload(payload)
     if topic in (Topic.MP, Topic.POOLING):
-        return DataExchangeMessage.from_payload(topic, payload)
+        return topic, DataExchangeMessage.from_payload(payload)
 
     raise ValueError(f"Unknown topic: {topic}")
+
+
+def encode_message(topic: Topic, msg: MessageBase) -> bytes:
+    topic_byte = bytes([topic.value])
+    payload_bytes = msg.to_bytes()
+    return topic_byte + payload_bytes
 
 
 class XBeePublisher:
@@ -224,7 +225,7 @@ class XBeePublisher:
         if add_random_delay:
             time.sleep(random.uniform(0.05, 0.2))
 
-        data = msg.to_bytes(topic_override=self.topic)
+        data = encode_message(self.topic, msg)
 
         ok = False
         backoff_delay = self.base_backoff
@@ -275,7 +276,7 @@ class ZigbeeInterfaceBase:
         self.device.add_data_received_callback(self._data_receive_callback)
         # self.network = self.device.get_network()
 
-    def _decode_message(self, payload: bytes) -> MessageBase | None:
+    def _decode_message(self, payload: bytes) -> tuple[Topic, MessageBase] | None:
         try:
             return decode_message(payload)
         except Exception as exc:
@@ -283,20 +284,21 @@ class ZigbeeInterfaceBase:
             return None
 
     def _data_receive_callback(self, xbee_message):
-        msg = self._decode_message(xbee_message.data)
-        if msg is None:
+        val = self._decode_message(xbee_message.data)
+        if val is None:
             return
+        topic, msg = val
 
-        handler = self._handlers.get(msg.topic)
+        handler = self._handlers.get(topic)
         if handler is None:
-            self.logger.warning(f"No handler registered for topic: {msg.topic.name}")
+            self.logger.warning(f"No handler registered for topic: {topic.name}")
             return
 
         try:
             self._invoke_handler(handler, msg, xbee_message)
         except Exception as exc:
             self.logger.error(
-                f"Error in handler for {msg.topic.name}: {exc}", exc_info=True
+                f"Error in handler for {topic.name}: {exc}", exc_info=True
             )
 
     def _handler_param_count(self, handler):
@@ -325,21 +327,11 @@ class ZigbeeInterfaceBase:
         )
 
 
-def _coerce_node_id(value):
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return value
-
-
 class ZigbeeNodeInterface(ZigbeeInterfaceBase):
-    def __init__(self, port, baud_rate, node_name, num_nodes, sync_ops_timeout=1.0, logger=None):
+    def __init__(self, port, baud_rate, node_name, sync_ops_timeout=4.0, logger=None):
         super().__init__(port, baud_rate, sync_ops_timeout, logger)
 
         self.node_name = node_name
-        self.num_nodes = num_nodes
 
         self.addr_map = {}
         self.central_addr = None
@@ -535,18 +527,18 @@ class ZigbeeCentralInterface(ZigbeeInterfaceBase):
             )
         return publishers
 
-    def send_to_node(self, node_name, msg: MessageBase, add_random_delay=False):
+    def send_to_node(self, node_name, topic: Topic, msg: MessageBase, add_random_delay=False):
         if node_name not in self.addr_map:
             self.logger.error(f"No address for node_name={node_name}")
             return False
 
-        key = (node_name, msg.topic)
+        key = (node_name, topic)
         publisher = self._publisher_cache.get(key)
         if publisher is None:
             publisher = self._create_publisher_for_addr(
                 target_addr=self.addr_map[node_name],
                 target_name=node_name,
-                topic=msg.topic,
+                topic=topic,
             )
             self._publisher_cache[key] = publisher
 

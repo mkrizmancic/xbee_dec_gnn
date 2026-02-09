@@ -15,12 +15,11 @@ from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.widgets import Button
 from torch_geometric.data import Data, InMemoryDataset
 from xbee_dec_gnn.utils import ObjectWithLogger
-from xbee_dec_gnn.utils.zigbee_comm import GraphMessage, ZigbeeCentralInterface
+from xbee_dec_gnn.utils.zigbee_comm import GraphMessage, Topic, ZigbeeCentralInterface
 
 
 class GraphGenerator(ObjectWithLogger):
-    def __init__(
-        self,
+    def __init__(self,
         graph_mode="load",
         gui_mode=False,
         port="/dev/ttyUSB0",
@@ -128,7 +127,7 @@ class GraphGenerator(ObjectWithLogger):
                     "Reduce feature_dim or pruning."
                 )
 
-            self.zigbee.send_to_node(node_name, msg, add_random_delay=False)
+            self.zigbee.send_to_node(node_name, Topic.GRAPH, msg, add_random_delay=False)
 
 
     def process_next_graph(self):
@@ -369,19 +368,7 @@ if __name__ == "__main__":
     )
     args.add_argument("--port", default="/dev/ttyUSB0")
     args.add_argument("--baud", type=int, default=9600)
-    args.add_argument(
-        "--feature-dim",
-        type=int,
-        default=8,
-        help="Number of per-node features to send. Set to 0 or negative to send all features.",
-    )
-    args.add_argument(
-        "--graph-size",
-        type=int,
-        default=None,
-        help="Size of graphs to load from dataset (must be >= num_nodes). Use 3 when testing with 2 nodes.",
-    )
+    args.add_argument("--num-nodes", type=int, default=None,help="Number of nodes in the graph.")
+
     parsed_args = args.parse_args()
-    if parsed_args.feature_dim is not None and parsed_args.feature_dim <= 0:
-        parsed_args.feature_dim = None
     main(parsed_args)

@@ -27,7 +27,6 @@ class Node(ObjectWithLogger):
         super().__init__(logger_name="xbee_dec_gnn.node")
 
         # Unique identifier for the node. # DOC: We assume all nodes have the same format of the name.
-        # self.node_id = node_id
         self.node_prefix = "node_"
         self.node_id = params.node_id or socket.gethostname()[-1]
         try:
@@ -65,7 +64,6 @@ class Node(ObjectWithLogger):
             params.port,
             params.baud,
             self.node_name,
-            self.num_nodes,
             logger=self.get_logger(),
         )
         self.graph_lock = threading.Event()
@@ -159,9 +157,17 @@ class Node(ObjectWithLogger):
 
     def run(self):
         # Main loop of the node.
+        next_call = time.perf_counter()
+
         while True:
-            time.sleep(0.1)
             self.compute_gnn()
+
+            next_call += 0.5
+            sleep_time = next_call - time.perf_counter()
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+            else:
+                next_call = time.perf_counter()  # If we're behind schedule, skip sleeping to catch up.
 
     def start(self):
         self.zigbee.start()
@@ -173,13 +179,13 @@ class Node(ObjectWithLogger):
         # Initialize publishers to neighbors
         self._init_neighbor_publishers()
 
-        # Wait for GRAPH message before starting GNN
-        self.get_logger().info("Waiting for GRAPH payload...")
-
-        self.graph_lock.wait()
         self.get_logger().info("Setup complete: graph/features loaded; starting GNN loop")
 
     def get_neighbors(self):
+        # Still waiting for the first graph message to be received and processed.
+        if not self.graph_lock.is_set():
+            return False
+
         self.active_neighbors = []
 
         # We know the whole graph in development mode.
@@ -193,9 +199,9 @@ class Node(ObjectWithLogger):
             )
             raise RuntimeError("Local subgraph is not connected.")
         ready = len(self.active_neighbors) > 0 and self.starting_data is not None
-
         if ready:
             self.get_logger().debug(f"Neighbors: {self.active_neighbors}")
+
         return ready
 
     def get_initial_features(self):
