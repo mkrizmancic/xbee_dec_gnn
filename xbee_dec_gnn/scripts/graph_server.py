@@ -244,7 +244,7 @@ class GraphGenerator(ObjectWithLogger):
 
             new_pos = {k: v.copy() for k, v in pos.items()}
             for node in new_pos:
-                new_pos[node][0] += offset_x
+                new_pos[node][0] += offset_x * i
 
             nx.draw(
                 self.G,
