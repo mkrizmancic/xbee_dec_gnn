@@ -367,7 +367,7 @@ if __name__ == "__main__":
         help="Number of steps to interpolate between graphs when in load mode and continuous is set.",
     )
     args.add_argument("--port", default="/dev/ttyUSB0")
-    args.add_argument("--baud", type=int, default=9600)
+    args.add_argument("--baud", type=int, default=115200)
     args.add_argument("--num-nodes", type=int, default=None,help="Number of nodes in the graph.")
 
     parsed_args = args.parse_args()

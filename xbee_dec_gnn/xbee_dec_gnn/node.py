@@ -207,7 +207,10 @@ class Node(ObjectWithLogger):
     def get_initial_features(self):
         # Compute the initial feature vector for this node (already received over XBee).
         if self.starting_data is None:
-            self.get_logger().error("Initial features not loaded! This should never happen if the graph message is properly received and processed.")
+            self.get_logger().error(
+                "Initial features not loaded! This should never happen if the graph message "
+                "is properly received and processed."
+            )
             raise RuntimeError("Initial features not loaded.")
 
         return self.starting_data
@@ -256,7 +259,7 @@ class Node(ObjectWithLogger):
         if self.decentralized_model.pooling is None:
             return init_node_value
 
-        node_value = self.decentralized_model.init_pooling(init_node_value)
+        node_value = final_value = self.decentralized_model.init_pooling(init_node_value)
         for iteration in range(self.num_nodes - 1 + self.decentralized_model.pooling.convergence_min):
             # Send the current node representation to neighbors.
             self.send_pooling(iteration, node_value)
@@ -362,7 +365,7 @@ class Node(ObjectWithLogger):
             graph_value = self.run_prediction(graph_value)
             graph_value = graph_value.item()
         except TimeoutError as e:
-            self.get_logger().warning(f"Timeout: {e}")
+            self.get_logger().error(f"Timeout: {e}")
             return
 
         elapsed = time.perf_counter() - round_start
@@ -400,7 +403,7 @@ class Node(ObjectWithLogger):
 def main(args=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", default="/dev/ttyUSB0")
-    parser.add_argument("--baud", type=int, default=9600)
+    parser.add_argument("--baud", type=int, default=115200)
     parser.add_argument("--model-path", default="/root/resources/models/MIDS_model.pth")
     parser.add_argument("--num-nodes", type=int, default=5)
     parser.add_argument("--node-id", type=str, default=None, help="Unique identifier for this node")

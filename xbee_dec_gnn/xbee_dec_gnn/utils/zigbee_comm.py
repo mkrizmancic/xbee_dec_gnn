@@ -9,9 +9,15 @@ from enum import Enum
 from digi.xbee.devices import ZigBeeDevice
 from digi.xbee.exception import TimeoutException, TransmitException
 from digi.xbee.models.address import XBee16BitAddress, XBee64BitAddress
+from digi.xbee.models.message import XBeeMessage
+from xbee_dec_gnn.utils.timeout import (
+    run_with_timeout,
+    TimeoutErrorWithStatus,
+)
 
 
 class Topic(Enum):
+    NONE = 0
     HANDSHAKE = 1
     GRAPH = 2
     MP = 3
@@ -207,12 +213,13 @@ def encode_message(topic: Topic, msg: MessageBase) -> bytes:
 
 class XBeePublisher:
     def __init__(self, zigbee_device, target_addr, target_name, topic: Topic, logger=None):
-        self.device = zigbee_device
+        self.device: ZigBeeDevice = zigbee_device
         self.target_name = target_name
         self.topic = topic
 
         self.num_retries = 5
         self.base_backoff = 0.05
+        self.send_timeout = float(self.device.get_sync_ops_timeout()) + 0.5
 
         if isinstance(target_addr, str):
             self.target_addr = XBee64BitAddress.from_hex_string(target_addr)
@@ -230,20 +237,26 @@ class XBeePublisher:
         ok = False
         backoff_delay = self.base_backoff
         for attempt in range(1, self.num_retries + 1):
+            # Digi sync_ops_timeout waits for TX status, but lower-level serial writes can still block.
             try:
-                self.device.send_data_64_16(self.target_addr, XBee16BitAddress.UNKNOWN_ADDRESS, data)
+                run_with_timeout(
+                    self.send_timeout,
+                    self.device.send_data_64_16,
+                    self.target_addr,
+                    XBee16BitAddress.UNKNOWN_ADDRESS,
+                    data,
+                )
                 attempt_info = f" (attempt {attempt})" if attempt > 1 else ""
                 self.logger.debug(f"TX: {msg.summary()} -> {self.target_name}{attempt_info}")
                 ok = True
                 break
-            except (TransmitException, TimeoutException) as exc:
+            except (TimeoutErrorWithStatus, TransmitException, TimeoutException) as exc:
                 status = getattr(exc, "transmit_status", None) or getattr(exc, "status", None)
                 self.logger.warning(f"TX fail: {msg.summary()} (attempt {attempt}, {status})")
                 if attempt < self.num_retries:
                     time.sleep(backoff_delay)
                     backoff_delay *= 2
-
-        if not ok:
+        else:
             self.logger.error(f"TX gave up: {msg.summary()} to {self.target_name}")
 
         return ok
@@ -283,9 +296,11 @@ class ZigbeeInterfaceBase:
             self.logger.warning(f"Failed to decode message: {exc}")
             return None
 
-    def _data_receive_callback(self, xbee_message):
+    def _data_receive_callback(self, xbee_message: XBeeMessage):
         val = self._decode_message(xbee_message.data)
         if val is None:
+            raw_msg = "\n".join(f"{k}: {v}" for k, v in xbee_message.to_dict().items())
+            self.logger.error(f"Received invalid message.\n{raw_msg}")
             return
         topic, msg = val
 
@@ -297,9 +312,7 @@ class ZigbeeInterfaceBase:
         try:
             self._invoke_handler(handler, msg, xbee_message)
         except Exception as exc:
-            self.logger.error(
-                f"Error in handler for {topic.name}: {exc}", exc_info=True
-            )
+            self.logger.error(f"Error in handler for {topic.name}: {exc}", exc_info=True)
 
     def _handler_param_count(self, handler):
         try:
@@ -478,7 +491,7 @@ class ZigbeeCentralInterface(ZigbeeInterfaceBase):
                     )
 
             try:
-                self.send_broadcast(msg)
+                self.send_broadcast(Topic.HANDSHAKE, msg)
                 self.logger.debug(f"TX: DISCOVERY broadcast (central_mac={my_addr})")
             except TransmitException as exc:
                 status = getattr(exc, "transmit_status", None) or getattr(exc, "status", None)
@@ -544,7 +557,7 @@ class ZigbeeCentralInterface(ZigbeeInterfaceBase):
 
         return publisher.publish(msg, add_random_delay=add_random_delay)
 
-    def send_broadcast(self, msg: MessageBase):
-        data = msg.to_bytes()
+    def send_broadcast(self, topic: Topic, msg: MessageBase):
+        data = encode_message(topic, msg)
         self.device.send_data_64_16(self.BCAST_64, self.BCAST_16, data)
 
